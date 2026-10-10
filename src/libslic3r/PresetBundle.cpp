@@ -2879,11 +2879,13 @@ ConfigSubstitutions PresetBundle::load_config_file(const std::string &path, Forw
 
 // Load a config file from a boost property_tree. This is a private method called from load_config_file.
 // is_external == false on if called from ConfigWizard
+// 把一份已经解析好的完整配置，拆分并加载到打印预设、打印机预设、各耗材预设和工程配置中，同时更新当前预设选择状态
 void PresetBundle::load_config_file_config(const std::string &name_or_path, bool is_external, DynamicPrintConfig &&config, Semver file_version, bool selected, bool is_custom_defined)
 {
     PrinterTechnology printer_technology = Preset::printer_technology(config);
 
     auto clear_compatible_printers = [](DynamicPrintConfig& config){
+        // compatible_printers参数 明确列出兼容的打印机预设名称
         ConfigOption *opt_compatible = config.optptr("compatible_printers");
         if (opt_compatible != nullptr) {
             assert(opt_compatible->type() == coStrings);
@@ -2901,6 +2903,7 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
         1;
 #else
     // BBS: use filament_colour insteadof filament_settings_id, filament_settings_id sometimes is not generated
+    // 使用耗材颜色来确定耗材配置
     size_t num_filaments = config.option<ConfigOptionStrings>("filament_colour")->size();
 #endif
 
@@ -2922,6 +2925,7 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
 
     // filament_flow_step_size describes the composed config only. It must not be copied into an
     // individual filament preset; full_fff_config() will regenerate it after presets are restored.
+    // filament_flow_step_size描述的完成配置的拼接结构，不属于单个耗材预设，后面full_fff_config()是会重新构造
     config.erase("filament_flow_step_size");
 
     //BBS: add config related logs
@@ -2929,22 +2933,59 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
     // Make a copy of the "compatible_machine_expression_group" and "inherits_group" vectors, which
     // accumulate values over all presets (print, filaments, printers).
     // These values will be distributed into their particular presets when loading.
+    // 工艺、耗材是否兼容当前打印机，存储的是条件表达式
+    // 参数布局：
+    // [0] → 打印工艺的打印机兼容条件
+    // [1] → 耗材 1 的打印机兼容条件
+    // [2] → 耗材 2 的打印机兼容条件
+    // [3] → 打印机位置的空占位
     std::vector<std::string> compatible_printers_condition_values   = std::move(config.option<ConfigOptionStrings>("compatible_machine_expression_group", true)->values);
+    
+    // 每个耗材预设与打印工艺兼容的条件表达式
+    // 例如
+    //     compatible_prints_condition_values = {
+    //     "layer_height <= 0.2",  // 耗材 1 的兼容条件
+    //     ""                     // 耗材 2 没有设置条件表达式
+    // };
     std::vector<std::string> compatible_prints_condition_values     = std::move(config.option<ConfigOptionStrings>("compatible_process_expression_group",   true)->values);
+    
+    // 每个预设继承的父预设名称
+    // inherits_group的通用布局：
+    // 0：打印预设的父预设名称
+    // i+1: 第i个耗材的父预设名称，i从0开始
+    // num_filaments + 1: 打印机的父预设名称
     std::vector<std::string> inherits_values                        = std::move(config.option<ConfigOptionStrings>("inherits_group", true)->values);
+    
+    // 各耗材的标识ID，它用于把同一种耗材在不同预设、设备数据和校准记录之间关联起来
+    // filament_settings_id[i]表示第 i 个槽位使用哪个具体预设
+    // filament_ids[i]表示这个预设对应哪种耗材身份
+    // 同一种耗材针对不同的打印机可能会有不同的参数，但是还是属于同一种耗材
     std::vector<std::string> filament_ids                           = std::move(config.option<ConfigOptionStrings>("filament_ids", true)->values);
+    
+    // 工艺预设兼容的打印机名称列表
     std::vector<std::string> print_compatible_printers              = std::move(config.option<ConfigOptionStrings>("print_compatible_printers", true)->values);
     //BBS: add different settings check logic
     bool has_different_settings_to_system                           = config.option("different_settings_to_system")?true:false;
+    
+    // 各预设相对基础预设发生变化的参数名列表，经过字符串编码
+    // 底层在找到对应父预设或系统预设后，会用这个集合区分：
+    // 列在差异集合中的参数 → 保留导入值
+    // 其他参数  → 可以采用当前基础预设的值
     std::vector<std::string> different_values                       = std::move(config.option<ConfigOptionStrings>("different_settings_to_system", true)->values);
+    
+    // 当前预设与打印机兼容的条件
     std::string &compatible_printers_condition  = Preset::compatible_printers_condition(config);
+    // 当前耗材预设与打印工艺兼容的条件
     std::string &compatible_prints_condition    = Preset::compatible_prints_condition(config);
+    // 当前预设的父预设名称
     std::string &inherits                       = Preset::inherits(config);
+
     compatible_printers_condition_values.resize(num_filaments + 2, std::string());
     compatible_prints_condition_values.resize(num_filaments, std::string());
     inherits_values.resize(num_filaments + 2, std::string());
     different_values.resize(num_filaments + 2, std::string());
     filament_ids.resize(num_filaments, std::string());
+    
     // The "default_filament_profile" will be later extracted into the printer profile.
 	switch (printer_technology) {
 	case ptFFF:
@@ -2965,6 +3006,12 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
     // 2) If the loading succeeded, split and load the config into print / filament / printer settings.
     // First load the print and printer presets.
 
+    // 从完整 config 中准备好某一类预设的元数据，再将配置加载到指定的预设集合中
+    // presets: 加载到哪个预设集合中
+    // idx: 从前面提取的分组数组中，取哪个预设的信息
+    // key: 完整配置中存储原预设名称的字段，如 "print_settings_id"
+    // different_keys: 相对基础预设有变化、需要保留导入值的参数名集合
+    // filament_id: 传给外部预设加载器的耗材 ID；打印和打印机调用传空字符串
 	auto load_preset =
 		[&config, &inherits, &inherits_values,
          &compatible_printers_condition, &compatible_printers_condition_values,
@@ -2972,8 +3019,11 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
          is_external, &name, &name_or_path, file_version, selected, is_custom_defined]
 		(PresetCollection &presets, size_t idx, const std::string &key, const std::set<std::string> &different_keys, std::string filament_id) {
 		// Split the "compatible_printers_condition" and "inherits" values one by one from a single vector to the print & printer profiles.
-		inherits = inherits_values[idx];
+		// 这两个数组采用的是：0表示打印工艺，1~N表示打印工艺，N + 1表示打印机
+        inherits = inherits_values[idx];
 		compatible_printers_condition = compatible_printers_condition_values[idx];
+        
+        // 对于compatible_prints_condition_values只存储耗材的工艺兼容条件，0~N-1表示各个耗材
         if (idx > 0 && idx - 1 < compatible_prints_condition_values.size())
             compatible_prints_condition = compatible_prints_condition_values[idx - 1];
         //BBS: add config related logs
@@ -3003,6 +3053,7 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
             compatible_printers->values = print_compatible_printers;
         }
 
+        // 加载打印预设，print_settings_id表示打印工艺预设名称，例如"0.20mm Standard"
         load_preset(this->prints, 0, "print_settings_id", print_different_keys_set, std::string());
 
         //clear compatible printers
@@ -3019,14 +3070,20 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
             printer_different_keys_set.insert(ignore_settings_list.begin(), ignore_settings_list.end());
         //BBS: add config related logs
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": load printer preset from printer_settings_id");
+        
+        // 加载打印机预设，printer_settings_id表示打印机预设名称，例如"Snapmaker U1 0.4 nozzle"
         load_preset(this->printers, num_filaments + 1, "printer_settings_id", printer_different_keys_set, std::string());
 
         // 3) Now load the filaments. If there are multiple filament presets, split them and load them.
+        // 下面加载耗材部分，如果有多个耗材预设，需要拆开加载
+        // filament_settings_id表示各耗材槽位对应的耗材预设名称，所以是一个字符串数组
         auto old_filament_profile_names = config.option<ConfigOptionStrings>("filament_settings_id", true);
         old_filament_profile_names->values.resize(num_filaments, std::string());
 
+        // 单个耗材
         if (num_filaments <= 1) {
             // Split the "compatible_printers_condition" and "inherits" values from the cummulative vectors to separate filament presets.
+            // 将耗材的元数据写入到config中
             inherits                      = inherits_values[1];
             compatible_printers_condition = compatible_printers_condition_values[1];
 			compatible_prints_condition   = compatible_prints_condition_values.front();
@@ -3053,6 +3110,8 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
 				loaded= &this->filaments.load_preset(this->filaments.path_from_name(name, inherits.empty()), name, config, true, file_version, is_custom_defined);
 				loaded->save(nullptr);
 			}
+
+            // 记录实际加载到的预设名称
             this->filament_presets.clear();
 			this->filament_presets.emplace_back(loaded->name);
         } else {
@@ -3094,8 +3153,14 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
             bool any_modified = false;
             //BBS: add config related logs
             BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": load multiple filament preset from filament_settings_id");
+            
+            // 从最后一个耗材往前加载，为了避免插入预设时影响当前选中索引
+            // i == 0       → Always
+            // any_modified → Never
+            // 其他情况     → OnlyIfModified
             for (int i = (int)configs.size()-1; i >= 0; i--) {
                 DynamicPrintConfig &cfg = configs[i];
+
                 // Split the "compatible_printers_condition" and "inherits" from the cummulative vectors to separate filament presets.
                 cfg.opt_string("compatible_printers_condition", true) = compatible_printers_condition_values[i + 1];
                 cfg.opt_string("compatible_prints_condition",   true) = compatible_prints_condition_values[i];
@@ -3126,7 +3191,9 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
                         PresetCollection::LoadAndSelect::OnlyIfModified,
                     file_version,
                     filament_id);
+
                 any_modified |= modified;
+                // 更新每个耗材预设槽位的结果
                 this->filament_presets[i] = loaded->name;
             }
         }
@@ -3150,11 +3217,17 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
         break;
     }
 
+    // 更新预设兼容状态，前面已经加载了新的打印机、工艺和耗材预设，它们之间的兼容关系需要重新计算
+    // Never 的含义是：重新计算兼容性，但不因为发现不兼容，就自动换成其他预设
+    // 例如工程指定了某个耗材预设，即使它与当前打印机不兼容，这里仍保留工程加载的选择
 	this->update_compatible(PresetSelectCompatibleType::Never);
+
+    // 同步多耗材相关数据
     this->update_multi_material_filament_presets();
 
     //BBS
     //const std::string &physical_printer = config.option<ConfigOptionString>("physical_printer_settings_id", true)->value;
+    // 处理物理打印机选择
     const std::string physical_printer;
     if (this->printers.get_edited_preset().is_external || physical_printer.empty()) {
         this->physical_printers.unselect_printer();

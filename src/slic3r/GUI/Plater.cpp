@@ -11605,6 +11605,9 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
 
     // BBS
     int filaments_cnt = config->opt<ConfigOptionStrings>("filament_colour")->values.size();
+
+    // one_by_one决定对象何时加入场景
+    // 逐文件处理或者先汇总到临时new_model，最后统一处理
     bool one_by_one = input_files.size() == 1 || printer_technology == ptSLA/* || filaments_cnt <= 1*/;
     if (! one_by_one) {
         for (const auto &path : input_files) {
@@ -11705,9 +11708,12 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
             strategy = strategy | LoadStrategy::LoadAuxiliary;
         }
         if (load_config) strategy = strategy | LoadStrategy::CheckVersion;
+        
         bool is_project_file = false;
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": is_project_file %1%, type_3mf %2%") % is_project_file % type_3mf;
+        
         try {
+            // 如果是3mf文件
             if (type_3mf) {
                 DynamicPrintConfig config;
                 Semver             file_version;
@@ -11721,6 +11727,8 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                     std::vector<Preset *>     project_presets;
                     // BBS: backup & restore
                     q->skip_thumbnail_invalid = true;
+
+                    // 读取3mf文件
                     model = Slic3r::Model::read_from_archive(path.string(), &config_loaded, &config_substitutions, en_3mf_file_type, strategy, &plate_data, &project_presets,
                                                              &file_version,
                                                              [this, &dlg, real_filename, &progress_percent, &file_percent, stage_percent, INPUT_FILES_RATIO, total_files, i,
@@ -12081,6 +12089,7 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
 
                 if (load_config) {
                     if (!config.empty()) {
+                        // 对从文件中读取的配置进行结构上的归一化
                         Preset::normalize(config);
                         PresetBundle *preset_bundle = wxGetApp().preset_bundle;
 
@@ -12130,6 +12139,7 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
                             if (wipe_tower_y_opt)
                                 file_wipe_tower_y = *wipe_tower_y_opt;
 
+                            // 将从文件中读取到的配置添加到当前预设体系
                             preset_bundle->load_config_model(filename.string(), std::move(config), file_version);
 
                             ConfigOption* bed_type_opt = preset_bundle->project_config.option("curr_bed_type");

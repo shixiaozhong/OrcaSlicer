@@ -159,6 +159,8 @@ public:
     
     PresetCollection            prints;
     PresetCollection            sla_prints;
+    
+    // 耗材预设集合，管理所有预设及当前编辑副本
     PresetCollection            filaments;
     PresetCollection            sla_materials;
 	PresetCollection& 			materials(PrinterTechnology pt)       { return pt == ptFFF ? this->filaments : this->sla_materials; }
@@ -167,6 +169,7 @@ public:
     PhysicalPrinterCollection   physical_printers;
     // Filament preset names for a multi-extruder or multi-material print.
     // extruders.size() should be the same as printers.get_edited_preset().config.nozzle_diameter.size()
+    // 每个耗材槽位使用的预设名称
     std::vector<std::string>    filament_presets;
     // BBS: ams
     std::map<int, DynamicPrintConfig> filament_ams_list;
@@ -215,11 +218,13 @@ public:
 
     // Load user configuration and store it into the user profiles.
     // This method is called by the configuration wizard.
+    // 创建并保存用户预设。
     void                        load_config_from_wizard(const std::string &name, DynamicPrintConfig config, Semver file_version, bool is_custom_defined = false)
         { this->load_config_file_config(name, false, std::move(config), file_version, true, is_custom_defined); }
 
     // Load configuration that comes from a model file containing configuration, such as 3MF et al.
     // This method is called by the Plater.
+    // 按外部配置加载
     void                        load_config_model(const std::string &name, DynamicPrintConfig config, Semver file_version = Semver())
         { this->load_config_file_config(name, true, std::move(config), file_version); }
 

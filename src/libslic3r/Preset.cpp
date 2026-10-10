@@ -2081,6 +2081,11 @@ static bool profile_print_params_same(const DynamicPrintConfig &cfg_old, const D
 // and select it, losing previous modifications.
 // Only a single profile could be edited at at the same time, which introduces complexity when loading
 // filament profiles for multi-extruder printers.
+// 将工程或 G-code 中的一类预设配置，接入当前预设集合
+// 整理导入参数 → 按名称寻找已有预设 → 根据差异信息调整参数 → 比较参数 → 复用、修改编辑副本或创建外部预设
+// 返回值：std::pair<Preset*, bool>
+// first：最终复用或创建的预设
+// second：是否选中了已有预设，并让其编辑副本产生了修改。它不是加载成功标志，也不是“是否新建预设”
 std::pair<Preset*, bool> PresetCollection::load_external_preset(
     // Path to the profile source file (a G-code, an AMF or 3MF file, a config file)
     const std::string           &path,
@@ -2101,6 +2106,7 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
     DynamicPrintConfig cfg(this->default_preset_for(combined_config).config);
     // SoftFever: ignore print connection info from project
     auto        keys = cfg.keys();
+    // 排除打印机连接相关信息
     keys.erase(std::remove_if(keys.begin(), keys.end(),
                               [](std::string &val) {
                                 return val == "print_host" || val == "print_host_webui" || val == "printhost_apikey" ||
@@ -2108,9 +2114,12 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
                               }),
                keys.end());
     cfg.apply_only(combined_config, keys, true);
+    // 获取父预设名称
     std::string                 &inherits = Preset::inherits(cfg);
 
     //BBS: add different settings check logic, replace the old system preset's default value with new system preset's default values
+    // 先在当前集合中查找完全同名的预设
+    // 没有找到，再查系统预设的改名映射
     std::deque<Preset>::iterator it       = this->find_preset_internal(original_name);
     bool                         found    = it != m_presets.end() && it->name == original_name;
     if (! found) {
@@ -2118,13 +2127,20 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
         it = this->find_preset_renamed(original_name);
         found = it != m_presets.end();
     }
+
+    // different_settings_list非空的话
+    // 如果 inherits 非空，尝试找到父预设，用父预设更新未列入差异集合的参数
     if (!inherits.empty() && (different_settings_list.size() > 0)) {
+        // 查找父预设
         auto iter = this->find_preset_internal(inherits);
         if (iter != m_presets.end() && iter->name == inherits) {
             //std::vector<std::string> dirty_options = cfg.diff(iter->config);
             for (auto &opt : keys) {
+                // 保留工程中的值
                 if (different_settings_list.find(opt) != different_settings_list.end())
                     continue;
+                
+                // 两边字段存在且类型相同，才使用基础预设的值
                 ConfigOption *opt_src = iter->config.option(opt);
                 ConfigOption *opt_dst = cfg.option(opt);
                 if (opt_src && opt_dst && opt_src->type() == opt_dst->type() && (*opt_src != *opt_dst)) {
@@ -2135,6 +2151,7 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
             }
         }
     }
+    // 否则，如果之前匹配到了系统预设，用该系统预设更新未列入差异集合的参数
     else if (found && it->is_system && (different_settings_list.size() > 0)) {
         for (auto &opt : keys) {
             if (different_settings_list.find(opt) != different_settings_list.end())
@@ -2151,6 +2168,9 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
 
     //BBS: add config related logs
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(" enter, type %1% , path %2%, name %3%, original_name %4%, inherits %5%")%Preset::get_type_string(m_type) %path %name %original_name %inherits;
+    
+    // Never，且当前编辑副本名称匹配、参数相同
+    // 结果：复用当前编辑状态对应的预设，不切换选择
     if (select == LoadAndSelect::Never) {
         // Some filament profile has been selected and modified already.
         // Check whether this profile is equal to the modified edited profile.
@@ -2170,6 +2190,9 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
         it = this->find_preset_renamed(original_name);
         found = it != m_presets.end();
     }*/
+
+    // 找到同名或旧名称映射预设，相关参数相同
+    // 结果：直接复用；仅 Always 时选中
     if (found && profile_print_params_same(it->config, cfg)) {
         // The preset exists and it matches the values stored inside config.
         if (select == LoadAndSelect::Always)
@@ -2185,12 +2208,16 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(" The preset exists and it matches the values stored inside config. using original_name %1%")%original_name;
         return std::make_pair(&(*it), false);
     }
+
+    // 原名称未找到，允许选择且 inherits 非空
+    // 结果：再尝试把父预设作为候选
     if (! found && select != LoadAndSelect::Never && ! inherits.empty()) {
         // Try to use a system profile as a base to select the system profile
         // and override its settings with the loaded ones.
         assert(it == m_presets.end());
         it    = this->find_preset_internal(inherits);
         found = it != m_presets.end() && it->name == inherits;
+
         if (found && profile_print_params_same(it->config, cfg)) {
             // The system preset exists and it matches the values stored inside config.
             if (select == LoadAndSelect::Always)
@@ -2207,9 +2234,14 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
             return std::make_pair(&(*it), false);
         }
     }
+
+    // 候选存在、参数不同
     if (found) {
         //BBS: only select preset for always
         //if (select != LoadAndSelect::Never) {
+
+        // 且为 Always
+        // 结果：选中候选，将 cfg 应用到编辑副本
         if (select == LoadAndSelect::Always) {
             // Select the existing preset and override it with new values, so that
             // the differences will be shown in the preset editor against the referenced profile.
@@ -2233,6 +2265,8 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
         }
 
         //BBS: for other filaments under AMS
+        // 不是 Always，但候选是工程内嵌预设
+        // 结果：直接更新该内嵌预设的配置
         if (it->is_project_embedded) {
             //update the properties back to the preset
             it->config.apply_only(cfg, keys, true);
@@ -2248,9 +2282,22 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
     }
 
     // The external preset does not match an internal preset, load the external preset.
+
+    // 以上情况都不能满足，这个外部预设不满足任一内部预设，加载这个外部预设
     std::string new_name;
     //BBS: add project embedded preset logic
     //BBS: refine the name logic
+
+    // 名称通常按下面方式生成：
+    // Generic PLA(demo.3mf)
+    // Generic PLA-1(demo.3mf)
+    // Generic PLA-2(demo.3mf)
+
+    // 每生成一个候选名称就检查：
+    // - 名称不存在：可以创建
+    // - 名称存在且参数相同：复用它
+    // - 名称存在但参数不同：增加编号继续查找
+    // 所以重复导入同一个工程时，不一定反复创建新预设
     for (size_t idx = 0;; ++ idx) {
         std::string prefix;
         if (original_name.empty()) {
@@ -2280,10 +2327,12 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
         }
         //new_name = name + suffix;
         new_name = prefix + "(" + name + ")";
+        // 构造出新名称后，再去内置预设集合中查找
         it = this->find_preset_internal(new_name);
         if (it == m_presets.end() || it->name != new_name)
             // Unique profile name. Insert a new profile.
             break;
+        // 找到了，然后判断相关参数是否相同
         if (profile_print_params_same(it->config, cfg)) {
             // The preset exists and it matches the values stored inside config.
             if (select == LoadAndSelect::Always)
@@ -2292,8 +2341,11 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
             BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(" The preset %1% exists and it matches the values stored inside config.")%new_name;
             return std::make_pair(&(*it), false);
         }
+
+        // 名称存在但是参数不同，继续查找
         // Form another profile name.
     }
+
     // Insert a new profile.
     //BBS: add project embedded preset logic
     bool from_project = boost::algorithm::iends_with(name, ".3mf");
@@ -2303,9 +2355,12 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
         cfg.option<ConfigOptionStrings>("filament_settings_id", true)->values[0] = new_name;
     else if (m_type == Preset::TYPE_PRINTER)
         cfg.option<ConfigOptionString>("printer_settings_id", true)->value = new_name;
+    
+    // 创建新预设
     Preset &preset = this->load_preset(path, new_name, std::move(cfg), select == LoadAndSelect::Always);
     preset.is_external = true;
     preset.version = file_version;
+
     if (!filament_id.empty())
         preset.filament_id = filament_id;
     else {
@@ -2316,10 +2371,13 @@ std::pair<Preset*, bool> PresetCollection::load_external_preset(
         }
     }
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " " << preset.name << " filament_id: " << preset.filament_id << " base_id: " << preset.base_id;
+    
+    // 来源名以 .3mf 结尾：标记 is_project_embedded = true，这个分支不直接保存成普通用户预设文件
     if (from_project) {
         preset.is_project_embedded = true;
     }
     else {
+        // 其他来源：设置预设文件路径并调用 save()
         //external config
         preset.file = path_for_preset(preset);
         //BBS: save full config here for external
