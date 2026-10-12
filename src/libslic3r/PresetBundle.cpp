@@ -2903,7 +2903,7 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
         1;
 #else
     // BBS: use filament_colour insteadof filament_settings_id, filament_settings_id sometimes is not generated
-    // 使用耗材颜色来确定耗材配置
+    // 使用耗材颜色来确定耗材数量
     size_t num_filaments = config.option<ConfigOptionStrings>("filament_colour")->size();
 #endif
 

@@ -381,9 +381,11 @@ std::string Preset::remove_suffix_modified(const std::string &name)
 }
 
 // Update new extruder fields at the printer profile.
+// 把读入的配置整理成后续代码预期的结构，主要包括补齐缺失字段、调整参数数组长度，以及兼容旧版配置
 void Preset::normalize(DynamicPrintConfig &config)
 {
     size_t n = 1;
+    // 先确定耗材数或挤出机数
     if (config.option("single_extruder_multi_material") == nullptr || config.opt_bool("single_extruder_multi_material")) {
         // BBS
         auto* filament_diameter = dynamic_cast<const ConfigOptionFloats*>(config.option("filament_diameter"));
@@ -403,11 +405,19 @@ void Preset::normalize(DynamicPrintConfig &config)
 
     const auto &defaults = FullPrintConfig::defaults();
 
+    // 配置中具有耗材直径参数
     if (config.option("filament_diameter") != nullptr) {
         // This config contains single or multiple filament presets.
         // Ensure that the filament preset vector options contain the correct number of values.
+        
+        // 计算流量变体参数数组至少需要多少个元素
+        // filament_flow_support表示支持哪些流量模式
         const auto *filament_flow_support = config.option<ConfigOptionStrings>("filament_flow_support");
+        // filament_flow_step_size表示完整配置中，每个耗材占多少个变体元素
+        // filament_flow_step_size = {2, 3};表示耗材 A 占 2 项，耗材 B 占 3 项
+        // 完整参数数组：[A标准值, A高流量值, B模式1值, B模式2值, B模式3值]
         const auto *filament_flow_step_sizes = config.option<ConfigOptionInts>("filament_flow_step_size");
+        // 默认一个耗材一个值处理
         size_t flow_variant_value_count = n;
         if (n == 1 && filament_flow_support != nullptr && !filament_flow_support->values.empty()) {
             // A standalone filament preset is declaration-driven. Its default
@@ -415,14 +425,20 @@ void Preset::normalize(DynamicPrintConfig &config)
             flow_variant_value_count = filament_flow_support->values.size();
         } else if (filament_flow_step_sizes != nullptr && filament_flow_step_sizes->values.size() == n) {
             flow_variant_value_count = 0;
+            
+            // 遍历分段表，计算总长度
             for (int step_size : filament_flow_step_sizes->values)
                 flow_variant_value_count += size_t(std::max(1, step_size));
         }
+
+        // 更新所有耗材参数相关的配置
         for (const std::string &key : Preset::filament_options()) {
             if (key == "compatible_prints" || key == "compatible_printers" || key == "filament_flow_support")
                 continue;
 
             auto *opt = config.option(key, false);
+            // 如果字段不存在，同时FullPrintConfig中都有默认值
+            // 直接复制默认配置项
             if (opt == nullptr) {
                 const ConfigOption* default_opt = defaults.option(key);
                 if (default_opt != nullptr) {
@@ -430,12 +446,17 @@ void Preset::normalize(DynamicPrintConfig &config)
                     opt = config.option(key, false);
                 }
             }
+
+            // 如果字段存在，同时是数组，扩展到指定长度
+            // 普通耗材扩展到n，流量变体扩展到上面计算的变体总数
             if (opt != nullptr && opt->is_vector()) {
                 const size_t expected_size = is_filament_flow_variant_option(key) ? flow_variant_value_count : n;
                 if (static_cast<ConfigOptionVectorBase*>(opt)->size() < expected_size)
                     static_cast<ConfigOptionVectorBase*>(opt)->resize(expected_size, defaults.option(key));
             }
         }
+
+        // 对filament_settings_id进行扩容
         for (const std::string key : {"filament_settings_id"}) {
             auto *opt = config.option(key, false);
             if (opt != nullptr && opt->type() == coStrings && static_cast<ConfigOptionStrings*>(opt)->values.size() < n)
@@ -443,6 +464,7 @@ void Preset::normalize(DynamicPrintConfig &config)
         }
     } else if (config.option("layer_height") != nullptr) {
         // Print config: ensure all expected options exist in the loaded profile.
+        // 补齐打印工艺相关的参数
         for (const std::string &key : Preset::print_options()) {
             if (!config.has(key)) {
                 const ConfigOption* default_opt = defaults.option(key);
@@ -451,10 +473,13 @@ void Preset::normalize(DynamicPrintConfig &config)
             }
         }
 
+        // 获取工艺声明的流量模式数量
         const auto *process_flow_support = config.option<ConfigOptionStrings>(flow_support_key(ConfigFlowDomain::Process));
         const size_t flow_variant_count = process_flow_support == nullptr || process_flow_support->values.empty()
             ? 1
             : process_flow_support->values.size();
+
+        // 扩展数组
         for (const std::string &key : process_flow_variant_options()) {
             auto *option = dynamic_cast<ConfigOptionVectorBase *>(config.option(key, false));
             if (option != nullptr && option->size() < flow_variant_count)
@@ -462,6 +487,7 @@ void Preset::normalize(DynamicPrintConfig &config)
         }
     } else if (config.option("nozzle_diameter") != nullptr) {
         // Printer config: ensure all expected options exist in the loaded profile.
+        // 补齐打印机工艺相关的参数
         for (const std::string &key : Preset::printer_options()) {
             if (!config.has(key)) {
                 const ConfigOption* default_opt = defaults.option(key);
@@ -471,6 +497,7 @@ void Preset::normalize(DynamicPrintConfig &config)
         }
     }
 
+    // 兼容旧版sla字段
     handle_legacy_sla(config);
 }
 
