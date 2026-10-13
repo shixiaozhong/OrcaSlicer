@@ -3488,8 +3488,10 @@ void ObjectList::changed_object(const int obj_idx/* = -1*/) const
     wxGetApp().plater()->changed_object(obj_idx < 0 ? get_selected_obj_idx() : obj_idx);
 }
 
+// 根据对象列表当前选中的节点，同步配置上下文、参数面板和相关编辑工具状态
 void ObjectList::part_selection_changed()
 {
+    // 先隐藏耗材/挤出机编辑控件，清空当前配置指针，避免继续使用上一个选中项的配置
     if (m_extruder_editor) m_extruder_editor->Hide();
     int obj_idx = -1;
     int volume_id = -1;
@@ -3505,6 +3507,17 @@ void ObjectList::part_selection_changed()
     bool disable_ununiform_scale{false};
 
     const auto item = GetSelection();
+
+    // 根据节点类型，确定配置来源和需要更新的页面
+
+    // 打印盘 itPlate	    当前分支只有 TODO；盘配置由后面的参数面板刷新流程读取
+    // 对象 itObject	    m_config 指向对象配置，启用参数更新
+    // 零件 itVolume	    m_config 指向零件配置，启用参数更新
+    // 实例 itInstance	    使用所属对象的配置
+    // 设置节点 itSettings	根据父节点，使用对象、零件或高度范围配置
+    // 高度范围 itLayer /   itLayerRoot	更新高度范围面板；具体范围使用对应配置
+    // 多选	                结合画布选择，处理多对象配置和切割对象的操作限制
+    // 信息节点 itInfo	    部分节点会打开对应工具，如支撑绘制、涂色、模糊皮肤
     if (item && m_objects_model->GetItemType(item) == itInfo && m_objects_model->GetInfoItemType(item) == InfoItemType::CutConnectors) {
         og_name = _L("Cut Connectors information");
 
@@ -3665,6 +3678,7 @@ void ObjectList::part_selection_changed()
         }
     }
 
+    // 更新当前选择的对象id
     m_selected_object_id = obj_idx;
 
     if (update_and_show_manipulations) {
@@ -3699,6 +3713,8 @@ void ObjectList::part_selection_changed()
 
     update_min_height();
 
+    // 刷新参数面板并重新布局
+    // Freeze() / Thaw() 暂停和恢复重绘，用于减少界面刷新过程中的闪烁
     Sidebar& panel = wxGetApp().sidebar();
     panel.Freeze();
 
