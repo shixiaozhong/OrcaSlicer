@@ -2919,6 +2919,7 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
             filament_flow_step_sizes[i] = std::max(1, stored_step_sizes->values[i]);
     }
 
+    // 计算每个耗材的流量变体数据起始索引
     std::vector<size_t> filament_flow_segment_starts(num_filaments, 0);
     for (size_t i = 1; i < num_filaments; ++i)
         filament_flow_segment_starts[i] = filament_flow_segment_starts[i - 1] + size_t(filament_flow_step_sizes[i - 1]);
@@ -3128,12 +3129,16 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
                         configs[i].option(key, false)->set(other_opt);
                 }
                 else if (key != "compatible_printers" && key != "compatible_prints") {
+                    // 确定当前配置项应该按“每个耗材一整段变体数据”拆分，还是按“每个耗材一个值”拆分
+                    // 需要满足当前key是流量变体类或者filament_flow_support，同时当前参数的长度也需要等于分段表 要求的总长度
                     const bool uses_flow_variant_segment = has_filament_flow_segments &&
                         (is_filament_flow_variant_option(key) || key == "filament_flow_support") &&
                         static_cast<const ConfigOptionVectorBase*>(other_opt)->size() ==
                             filament_flow_segment_starts.back() + size_t(filament_flow_step_sizes.back());
+
                     for (size_t i = 0; i < configs.size(); ++i) {
                         auto *dst = static_cast<ConfigOptionVectorBase*>(configs[i].option(key, false));
+                        // 如果是流量变体，使用特定的更新机制
                         if (uses_flow_variant_segment) {
                             const size_t step_size = size_t(filament_flow_step_sizes[i]);
                             dst->resize(step_size);

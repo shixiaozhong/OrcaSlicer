@@ -6087,12 +6087,15 @@ void ObjectList::reload_all_plates(bool notify_partplate)
 
 void ObjectList::on_plate_selected(int plate_index)
 {
+    // 找到对象列表中对应的盘节点
     wxDataViewItem item = m_objects_model->GetItemByPlateId(plate_index);
     wxDataViewItem sel = GetSelection();
 
+    // 已经选中直接返回
     if (sel == item)
         return;
 
+    // 没有选中取消所有，再重新选择对应盘节点
     UnselectAll();
     Select(item);
 }

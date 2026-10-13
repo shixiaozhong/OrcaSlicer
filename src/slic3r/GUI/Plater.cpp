@@ -15840,7 +15840,7 @@ void Plater::priv::on_action_send_to_printer(bool isall)
 	m_send_to_sdcard_dlg->ShowModal();
 }
 
-
+// 处理点击打印框缩略图事件
 void Plater::priv::on_action_select_sliced_plate(wxCommandEvent &evt)
 {
     if (q != nullptr) {
@@ -15921,7 +15921,10 @@ void Plater::priv::on_action_export_to_sdcard_all(SimpleEvent&)
 void Plater::priv::on_plate_selected(SimpleEvent&)
 {
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ":received plate selected event\n" ;
+    // 同步侧边栏对象列表的选中行，从partplate_list获取当前盘选中索引
     sidebar->obj_list()->on_plate_selected(partplate_list.get_curr_plate_index());
+
+    // 同步逐对象打印警告
     q->sync_print_seq_warning_notification();
 }
 
@@ -15959,9 +15962,13 @@ void Plater::priv::on_action_split_volumes(SimpleEvent&)
     split_volume();
 }
 
+// 三维渲染画布对象选择变化后的回调, 把画布选择同步到左侧对象列表及参数面板，再刷新场景
 void Plater::priv::on_object_select(SimpleEvent& evt)
 {
+    // 从画布同步到对象列表和参数面板
     wxGetApp().obj_list()->update_selections();
+
+    // 更新编辑工具状态并重绘场景
     selection_changed();
 }
 
@@ -23808,10 +23815,14 @@ void Plater::apply_background_progress()
 }
 
 //BBS: select Plate
+// 本方法负责具体的盘状态、切片和预览处理
+// 切换盘状态、关联后台切片数据，再根据已有切片结果及当前界面决定是否重新切片、刷新预览，最后同步对象列表选中状态
 int Plater::select_plate(int plate_index, bool need_slice)
 {
     int ret;
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: plate %2%, need_slice %3% ")%__LINE__ %plate_index  %need_slice;
+
+    // 保存快照，切换当前盘
     take_snapshot("select partplate!");
     ret = p->partplate_list.select_plate(plate_index);
     if (!ret) {
@@ -23962,40 +23973,64 @@ int Plater::select_plate(int plate_index, bool need_slice)
         }
     }
 
+    // 同步对象列表和通知
     SimpleEvent event(EVT_GLCANVAS_PLATE_SELECT);
     p->on_plate_selected(event);
+
+    // 高低温耗材混用通知
     sync_filament_temp_mixing_notification();
+
+    // 耗材流量比例异常通知
     sync_flow_ratio_zero_notification();
+
+    // 冷板与耗材兼容性通知
     sync_cold_plate_notification();
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: plate %2%, return %3%")%__LINE__ %plate_index %ret;
     return ret;
 }
 
+// 检查耗材分组，切换当前打印盘并按需处理切片预览，最后把相机对准该盘
 int Plater::select_sliced_plate(int plate_index)
 {
     int ret = 0;
     BOOST_LOG_TRIVIAL(info) << "select_sliced_plate plate_idx=" << plate_index;
 
+    // 检查高流量喷嘴与耗材分组
     if (GUI::FlowType::any_nozzle_high_flow()) {
+        // 耗材分组需要更新
         if (p->partplate_list.is_filament_group_dirty()) {
+            // 判断是否都是高流量喷嘴
             bool all_high_flow = GUI::FlowType::distinct_nozzle_flow_type_count() < 2;
+            // 弹出FilamentGroupDialog
             GUI::FilamentGroupDialog dlg(this, all_high_flow);
             if (dlg.ShowModal() != wxID_OK)
                 return 0;
         }
     } else {
+        // 没有高流量喷嘴时，同步切片使用的耗材流量类型
         GUI::FlowType::sync_filament_volume_types_for_slice();
     }
 
+    // 暂停窗口重绘
     Freeze();
+
+    // 执行切盘
+    // 更新当前盘及选中状态
+    // 切换后台切片上下文
+    // 更新预览使用的 G-code 结果
+    // 根据当前视图和切片结果状态处理预览、必要时触发切片
+    // 通知对象列表选中对应盘节点
     ret = select_plate(plate_index, true);
     if (ret)
     {
+        // 处理失败
         BOOST_LOG_TRIVIAL(error) << "select_plate error for plate_idx=" << plate_index;
         Thaw();
         return -1;
     }
+
+    // 调整相机视角
     p->partplate_list.select_plate_view();
     Thaw();
 
