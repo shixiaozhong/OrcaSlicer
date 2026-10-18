@@ -426,6 +426,12 @@ void PresetBundle::copy_files(const std::string& from)
     }
 }
 
+// 预设加载总入口：先加载系统和用户预设，再恢复当前选中的打印机、工艺与耗材，并更新它们之间的兼容关系
+// config: 应用配置，提供用户预设目录、之前选中的打印机、每台打印机的工艺和耗材选择等信息
+// substitution_rule: 控制读取配置时，遇到当前版本无法识别的选项值如何处理
+// preferred_selection: 指定优先选择的打印机型号、变体或耗材，通常用于配置向导完成后的选择恢复；默认是空偏好
+
+// 返回值：配置兼容性替换记录，条记录包含预设名称、类型、来源、文件路径，以及具体哪些配置值被替换
 PresetsConfigSubstitutions PresetBundle::load_presets(AppConfig &config, ForwardCompatibilitySubstitutionRule substitution_rule,
                                                       const PresetPreferences& preferred_selection/* = PresetPreferences()*/)
 {
@@ -439,6 +445,8 @@ PresetsConfigSubstitutions PresetBundle::load_presets(AppConfig &config, Forward
 
     //BBS: add config related logs
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" enter, substitution_rule %1%, preferred printer_model_id %2%")%substitution_rule%preferred_selection.printer_model_id;
+    
+    // 加载系统预设
     //BBS: change system config to json
     std::tie(substitutions, errors_cummulative) = this->load_system_presets_from_json(substitution_rule);
     if (startup_profile) {
@@ -451,6 +459,7 @@ PresetsConfigSubstitutions PresetBundle::load_presets(AppConfig &config, Forward
 
     // BBS load preset from user's folder, load system default if
     // BBS: change directories by design
+    // 加载用户预设
     std::string dir_user_presets = config.get("preset_folder");
     if (dir_user_presets.empty()) {
         load_user_presets(DEFAULT_USER_FOLDER_NAME, substitution_rule);
@@ -465,9 +474,13 @@ PresetsConfigSubstitutions PresetBundle::load_presets(AppConfig &config, Forward
         phase_start = now;
     }
 
+    // 同步多耗材相关数据
     this->update_multi_material_filament_presets();
+
+    // 计算预设的兼容状态
     this->update_compatible(PresetSelectCompatibleType::Never);
 
+    // 恢复当前选择
     this->load_selections(config, preferred_selection);
     if (startup_profile) {
         const auto now = std::chrono::steady_clock::now();
@@ -1410,6 +1423,9 @@ void PresetBundle::remove_users_preset(AppConfig &config, std::map<std::string, 
 
 
 //BBS: add json related logic, load system presets from json
+// 负责将多个厂商中的系统预设装入同一个 PresetBundle
+// 继承：一个预设复制父预设的参数，再用自身参数覆盖，得到展开后的配置
+// 合并：把不同厂商已经加载好的预设对象放到总集合中，并处理重名和厂商指针
 std::pair<PresetsConfigSubstitutions, std::string> PresetBundle::load_system_presets_from_json(ForwardCompatibilitySubstitutionRule compatibility_rule)
 {
     const bool startup_profile = startup_profile_enabled();
@@ -1434,7 +1450,9 @@ std::pair<PresetsConfigSubstitutions, std::string> PresetBundle::load_system_pre
     std::string                 errors_cummulative;
     bool                        first = true;
     std::vector<std::string> vendor_names;
+
     // store all vendor names in vendor_names
+    // 将目录下的顶层json文件当做厂商入口
     for (auto& dir_entry : boost::filesystem::directory_iterator(dir)) {
         std::string vendor_file = dir_entry.path().string();
         if (!Slic3r::is_json_file(vendor_file))
@@ -1446,7 +1464,9 @@ std::pair<PresetsConfigSubstitutions, std::string> PresetBundle::load_system_pre
         vendor_name.erase(vendor_name.size() - 5);
         vendor_names.push_back(vendor_name);
     }
+
     // Move ORCA_FILAMENT_LIBRARY to the beginning of the list
+    // 把 ORCA_FILAMENT_LIBRARY 移到第一个位置，因为其他厂商的耗材可能继承公共耗材库中的配置
     for (size_t i = 0; i < vendor_names.size(); ++ i) {
         if (vendor_names[i] == ORCA_FILAMENT_LIBRARY) {
             std::swap(vendor_names[0], vendor_names[i]);
@@ -1463,14 +1483,19 @@ std::pair<PresetsConfigSubstitutions, std::string> PresetBundle::load_system_pre
         try {
             // Load the config bundle, flatten it.
             if (first) {
+                // 第一个厂商直接加载即公共耗材库，使用LoadSystem会调用reset，每个厂商都加载到this，已经加载的就会被重置
                 // Reset this PresetBundle and load the first vendor config.
                 append(substitutions, this->load_vendor_configs_from_json(dir.string(), vendor_name, PresetBundle::LoadSystem, compatibility_rule).first);
                 first = false;
             } else {
                 // Load the other vendor configs, merge them with this PresetBundle.
                 // Report duplicate profiles.
+
+                // 后续厂商使用临时Bundle，传入了this作为base_bundle，允许临时 Bundle 在解析继承时查询总 Bundle 中保存的公共基础配置
                 PresetBundle other;
                 append(substitutions, other.load_vendor_configs_from_json(dir.string(), vendor_name, PresetBundle::LoadSystem, compatibility_rule, this).first);
+                
+                // 将other合并到this中，先合并 vendors，再分别合并工艺、耗材、打印机等集合，同时汇总废弃预设信息和错误计数
                 std::vector<std::string> duplicates = this->merge_presets(std::move(other));
                 if (!duplicates.empty()) {
                     errors_cummulative += "Found duplicated settings in vendor " + vendor_name + "'s json file lists: ";
@@ -1504,7 +1529,9 @@ std::pair<PresetsConfigSubstitutions, std::string> PresetBundle::load_system_pre
 		this->reset(false);
 	}
 
+    // 更新旧名称映射和别名映射
     this->update_system_maps();
+
     //BBS: add config related logs
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(" finished, errors_cummulative %1%")%errors_cummulative;
     if (startup_profile) {
@@ -3249,6 +3276,10 @@ void PresetBundle::load_config_file_config(const std::string &name_or_path, bool
 }
 
 //BBS: Load a config bundle file from json
+// 读取一个厂商的 JSON 配置包，解析型号和预设、展开继承关系，并把结果装入当前 PresetBundle
+// flags:   控制加载范围、是否重置、是否标记为系统预设等
+// compatibility_rule: 遇到当前版本无法识别的配置值时，如何替换和记录
+// base_bundle: 可选的基础 Bundle，供继承查找使用，默认 nullptr
 std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_from_json(
     const std::string &path, const std::string &vendor_name, LoadConfigBundleAttributes flags, ForwardCompatibilitySubstitutionRule compatibility_rule, const PresetBundle* base_bundle)
 {
@@ -3261,6 +3292,8 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
 
     //BBS: add config related logs
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" enter, path %1%, compatibility_rule %2%")%path.c_str()%compatibility_rule;
+
+    // LoadSystem 模式下会重置当前 Bundle
     if (flags.has(LoadConfigBundleAttribute::ResetUserProfile) || flags.has(LoadConfigBundleAttribute::LoadSystem))
         // Reset this bundle, delete user profile files if SaveImported.
         this->reset(flags.has(LoadConfigBundleAttribute::SaveImported));
@@ -3268,6 +3301,14 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
     // 1) load the vroot json and construct the vendor profile
     VendorProfile vendor_profile(vendor_name);
     std::string root_file = path + "/" + vendor_name + ".json";
+    // 根json相当于配置包的清单，提供：
+    // 厂商名称、版本、更新地址
+    // machine_model_list
+    // process_list
+    // filament_list
+    // machine_list
+    // 每个清单项包含name和sub_path
+
     std::vector<std::pair<std::string, std::string>> machine_model_subfiles;
     std::vector<std::pair<std::string, std::string>> process_subfiles;
     std::vector<std::pair<std::string, std::string>> filament_subfiles;
@@ -3342,10 +3383,13 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
         for (const fs::path& file : files)
             subfile_map.emplace_back(file.stem().string(), file.lexically_relative(vendor_dir).generic_string());
     };
+
+    // 解析根json文件，构造vendor profile
     try {
         boost::nowide::ifstream ifs(root_file);
         json j;
         ifs >> j;
+
         //parse the json elements
         for (auto it = j.begin(); it != j.end(); it++) {
             if (boost::iequals(it.key(), BBL_JSON_KEY_VERSION)) {
@@ -3396,6 +3440,7 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
         //goto __error_process;
     }
 
+    // 如果是OrcaFilamentLibrary，同时如果耗材清单为空，就扫描其磁盘目录，按基础配置、顶层耗材、厂商子目录的顺序补齐文件清单
     if (vendor_name == ORCA_FILAMENT_LIBRARY && filament_subfiles.empty()) {
         const fs::path vendor_dir   = fs::path(path) / vendor_name;
         const fs::path filament_dir = vendor_dir / "filament";
@@ -3434,6 +3479,7 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
     }
 
     //2) paste the machine model
+    // 遍历machine下面的所有信息，构造VendorProfile::PrinterModel
     for (auto& machine_model : machine_model_subfiles)
     {
         std::string subfile = path + "/" + vendor_name + "/" + machine_model.second;
@@ -3516,11 +3562,13 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
                 %subfile %err.what() % path).str());
         }
 
+        // 添加到vendor_profile.models中
         if (! model.id.empty() && ! model.variants.empty())
             vendor_profile.models.push_back(std::move(model));
     }
 
     //insert the vendor profile
+    // 将当前vendor_profile添加到this.vecdors中
     this->vendors.emplace(vendor_name, vendor_profile);
     const VendorProfile* current_vendor_profile = &this->vendors[vendor_name];
 
@@ -3533,6 +3581,7 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
     PresetCollection         *presets = nullptr;
     size_t                   presets_loaded = 0;
 
+    // 核心方法：读取json文件，加载具体预设
     auto parse_subfile = [this, path, vendor_name, presets_loaded, current_vendor_profile, base_bundle](
         ConfigSubstitutionContext& substitution_context,
         PresetsConfigSubstitutions& substitutions,
@@ -3544,6 +3593,7 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
         size_t& count, bool is_from_lib = false) -> std::string {
 
         std::string subfile = path + "/" + vendor_name + "/" + subfile_iter.second;
+
         // Load the print, filament or printer preset.
         std::string               preset_name;
         DynamicPrintConfig        config;
@@ -3551,6 +3601,7 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
         std::vector<std::string>  renamed_from;
         const DynamicPrintConfig* default_config = nullptr;
         std::string               reason;
+
         try {
             std::map<std::string, std::string> key_values;
             substitution_context.substitutions.clear();
@@ -3558,12 +3609,18 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
             //parse the json elements
             DynamicPrintConfig config_src;
             std::string _renamed_from_str;
+
+            // 读取json，分离参数和元信息
+            // config_src：层高、速度、温度等配置参数
+            // key_values：name、inherits、instantiation、setting_id 等元信息
             config_src.load_from_json(subfile, substitution_context, false, key_values, reason);
+
             if (!reason.empty()) {
                 ++m_errors;
                 BOOST_LOG_TRIVIAL(error) << __FUNCTION__<< ": load config file "<<subfile<<" Failed!";
                 return reason;
             }
+
             preset_name = key_values[BBL_JSON_KEY_NAME];
             description     = key_values[BBL_JSON_KEY_DESCRIPTION];
             if(key_values.find(BBL_JSON_KEY_INSTANTIATION) == key_values.end())
@@ -3594,19 +3651,25 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
                 //                            << ": missing filament_id for " << preset_name
                 //                            << ", falling back to setting_id " << setting_id;
             }
+
             //check whether it inherits other preset or not
             auto it1 = key_values.find(BBL_JSON_KEY_INHERITS);
             if (it1 != key_values.end()) {
                 inherits = it1->second;
+                // 存在inherits，先查找当前类别的局部缓存
                 auto it2 = config_maps.find(inherits);
+
                 default_config = nullptr;
                 if (it2 != config_maps.end())
                     default_config = &(it2->second);
+                
+                // 找不到，再查基础 Bundle
                 if(default_config == nullptr && base_bundle != nullptr) {
                     auto base_it2 = base_bundle->m_config_maps.find(inherits);
                     if (base_it2 != base_bundle->m_config_maps.end())
                         default_config = &(base_it2->second);
                 }
+                
                 if (default_config != nullptr) {
                     if (filament_id.empty() && (presets_collection->type() == Preset::TYPE_FILAMENT)) {
                         auto filament_id_map_iter = filament_id_maps.find(inherits);
@@ -3630,13 +3693,18 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
                 }
             }
             else {
+                // 没有 inherits 时，则使用该类别的默认配置
                 if (presets_collection->type() == Preset::TYPE_PRINTER)
                     default_config = &presets_collection->default_preset_for(config_src).config;
                 else
                     default_config = &presets_collection->default_preset().config;
             }
+
+            // 先复制父配置，再覆盖当前文件显式声明的参数
             config = *default_config;
             config.apply(config_src);
+
+            // 判断是否只是基础模板，这类配置只用于后续继承，不创建正式Perset
             if (instantiation == "false" && "Template" != vendor_name) {
                 config_maps.emplace(preset_name, std::move(config));
                 if ((presets_collection->type() == Preset::TYPE_FILAMENT) && (!filament_id.empty()))
@@ -3652,6 +3720,8 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
                                              << "\" contains invalid \"renamed_from\" key, which is being ignored.";
                 }
             }
+
+            // 对config进行规范化
             Preset::normalize(config);
         }
         catch(nlohmann::detail::parse_error &err) {
@@ -3669,6 +3739,11 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
                                      << ", which were removed";
         }
 
+        // 如果是打印机预设，还会检查：
+        // printer_model 是否为空
+        // printer_variant 是否为空
+        // 型号是否存在于厂商元数据中
+        // 变体是否存在于该型号中
         if (presets_collection->type() == Preset::TYPE_PRINTER) {
             // Filter out printer presets, which are not mentioned in the vendor profile.
             // These presets are considered not installed.
@@ -3707,6 +3782,7 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
                 return reason;
             }
         }
+
         const Preset *preset_existing = presets_collection->find_preset(preset_name, false);
         if (preset_existing != nullptr) {
             ++m_errors;
@@ -3721,6 +3797,7 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
             file_path = (boost::filesystem::path(data_dir()) / vendor_name / subfile_iter.second).make_preferred();
 
         // Load the preset into the list of presets, save it to disk.
+        // 创建正式预设
         Preset &loaded = presets_collection->load_preset(file_path.string(), preset_name, std::move(config), false);
         if (flags.has(LoadConfigBundleAttribute::LoadSystem)) {
             loaded.is_system = true;
@@ -3746,6 +3823,7 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
         }
 
         // Derive the profile logical name aka alias from the preset name if the alias was not stated explicitely.
+        // 设置别名
         if (alias_name.empty()) {
             size_t end_pos = preset_name.find_first_of("@");
             if (end_pos != std::string::npos) {
@@ -3767,8 +3845,10 @@ std::pair<PresetsConfigSubstitutions, size_t> PresetBundle::load_vendor_configs_
             substitutions.push_back({
                 preset_name, presets_collection->type(), PresetConfigSubstitutions::Source::ConfigBundle,
                 std::string(), std::move(substitution_context.substitutions) });
+        // 缓存结果
         config_maps.emplace(preset_name, loaded.config);
         ++count;
+        
         //BBS: add config related logs
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(", got preset %1%, from %2%")%loaded.name %subfile;
         return reason;
