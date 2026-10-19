@@ -1260,6 +1260,7 @@ wxString PlaterPresetComboBox::get_preset_name(const Preset& preset)
 
 // Only the compatible presets are shown.
 // If an incompatible preset is selected, it is shown as well.
+// 重新构建侧栏的预设下拉框，并确定它当前显示哪一项
 void PlaterPresetComboBox::update()
 {
     if (m_type == Preset::TYPE_FILAMENT &&
@@ -1268,15 +1269,21 @@ void PlaterPresetComboBox::update()
         return;
 
     // Otherwise fill in the list from scratch.
+    // 暂停控件重绘
     this->Freeze();
+    // 清空原有项目
     this->Clear();
+    // 重置选中项
     invalidate_selection();
 
     const Preset* selected_filament_preset = nullptr;
     std::string filament_color;
+
+    // 耗材模式下还更新槽位的颜色图标，并根据槽位保存的预设名查找预设
     if (m_type == Preset::TYPE_FILAMENT)
     {
         //unsigned char rgb[3];
+        // 获取当前槽位的耗材颜色
         filament_color = m_preset_bundle->project_config.opt_string("filament_colour", (unsigned int) m_filament_idx);
         wxColor clr(filament_color);
         const int picker_size = std::max(1, 20 * m_em_unit / 10);
@@ -1291,6 +1298,8 @@ void PlaterPresetComboBox::update()
         clr_picker->SetLabel(clr_picker->GetLabel()); // Let setBezelStyle: be called
         clr_picker->Refresh();
 #endif
+        // 查找当前槽位选择的耗材预设
+        // m_collection是所有已经加载的耗材预设
         selected_filament_preset = m_collection->find_preset(m_preset_bundle->filament_presets[m_filament_idx]);
         if (!selected_filament_preset) {
             //can not find this filament, should be caused by project embedded presets, will be updated later
@@ -1324,15 +1333,18 @@ void PlaterPresetComboBox::update()
     /*if (!presets.front().is_visible)
         this->set_label_marker(this->Append(separator(L("System presets")), wxNullBitmap));*/
 
+    // 遍历预设集合
     for (size_t i = presets.front().is_visible ? 0 : m_collection->num_default_presets(); i < presets.size(); ++i)
     {
         const Preset& preset = presets[i];
+        // 比较槽位保存的名称与preset.name
         bool is_selected =  m_type == Preset::TYPE_FILAMENT ?
                             m_preset_bundle->filament_presets[m_filament_idx] == preset.name :
                             // The case, when some physical printer is selected
                             m_type == Preset::TYPE_PRINTER && m_preset_bundle->physical_printers.has_selection() ? false :
                             i == m_collection->get_selected_idx();
 
+        // 跳过不可见项，不兼容项通常也跳过，除非被判定为当前选中项
         if (!preset.is_visible || (!preset.is_compatible && !is_selected))
             continue;
 
@@ -1350,12 +1362,15 @@ void PlaterPresetComboBox::update()
 #endif
         }
 
+        // 获取预设图标
         wxBitmap* bmp = get_bmp(preset);
         assert(bmp);
 
+        // 生成preset显示名称
         wxString name = get_preset_name(preset);
         preset_descriptions.emplace(name, from_u8(preset.description));
 
+        // 将当前预设放进对应的显示分组，以及记录下拉框最终应该选中的标签
         if (preset.is_default || preset.is_system) {
             //BBS: move system to the end
             if (m_type == Preset::TYPE_PRINTER) {
@@ -1368,6 +1383,7 @@ void PlaterPresetComboBox::update()
             } else {
                 system_presets.emplace(name, bmp);
             }
+
             if (is_selected) {
                 tooltip = get_tooltip(preset);
                 selected_system_preset = name;
@@ -1389,6 +1405,7 @@ void PlaterPresetComboBox::update()
         }
         else
         {
+            // nonsys_presets表示其他预设，通常是用户预设
             nonsys_presets.emplace(name, bmp);
             if (is_selected) {
                 selected_user_preset = name;
@@ -1397,9 +1414,12 @@ void PlaterPresetComboBox::update()
             }
         }
     }
+
+    // 如果当前厂商是bbl，还需要加入AMS耗材项
     if (m_type == Preset::TYPE_FILAMENT && m_preset_bundle->is_bbl_vendor())
         add_ams_filaments(into_u8(selected_user_preset), true);
 
+    // 若有已连接机器的耗材信息，还会加入 “Machine Filament” 项，并按当前喷嘴直径筛选对应记录
     if (m_type == Preset::TYPE_FILAMENT && wxGetApp().preset_bundle->machine_filaments.size() > 0) {
         set_label_marker(Append(separator(L("Machine Filament")), wxNullBitmap));
         auto& filaments         = m_collection->get_presets();
@@ -1463,10 +1483,14 @@ void PlaterPresetComboBox::update()
     }
 
     //BBS: add project embedded preset logic
+    // 依次加入“项目内预设”“用户预设”“系统预设”的标题和项目，末尾再加入“添加／移除预设”等操作项
+    // 每加入一个普通项目，就用它的标签与之前记录的 selected_user_preset 或 selected_system_preset 比较，调用 validate_selection() 记录下拉框索引
     if (!project_embedded_presets.empty())
     {
+        // 加入分组标题
         set_label_marker(Append(separator(L("Project-inside presets")), wxNullBitmap));
         for (std::map<wxString, wxBitmap*>::iterator it = project_embedded_presets.begin(); it != project_embedded_presets.end(); ++it) {
+            // 加入预设名称和图标
             SetItemTooltip(Append(it->first, *it->second), preset_descriptions[it->first]);
             validate_selection(it->first == selected_user_preset);
         }
@@ -1496,6 +1520,7 @@ void PlaterPresetComboBox::update()
         wxBitmap* bmp = get_bmp("edit_preset_list", wide_icons, "edit_uni");
         assert(bmp);
 
+        // 添加操作入口
         if (m_type == Preset::TYPE_FILAMENT)
             set_label_marker(Append(separator(L("Add/Remove filaments")), *bmp), LABEL_ITEM_WIZARD_FILAMENTS);
         else if (m_type == Preset::TYPE_SLA_MATERIAL)
@@ -2086,13 +2111,18 @@ void TabPresetComboBox::msw_rescale()
     SetSize(sz);
 }
 
+// 更新参数编辑页定于的预设下拉框
 void TabPresetComboBox::update_dirty()
 {
     // 1) Update the dirty flag of the current preset.
+    // 更新当前选择和编辑预设的脏态标记
     m_collection->update_dirty();
 
     // 2) Update the labels.
+    // 用于暂缓控件重绘
     wxWindowUpdateLocker noUpdates(this);
+
+    // 遍历下拉框中的label
     for (unsigned int ui_id = 0; ui_id < GetCount(); ++ui_id) {
         auto marker = reinterpret_cast<Marker>(this->GetClientData(ui_id));
         if (marker >= LABEL_ITEM_MARKER)
@@ -2107,8 +2137,10 @@ void TabPresetComboBox::update_dirty()
             preset_name = PhysicalPrinter::get_preset_name(preset_name);
         }
 
+        // 按照名称去查找预设
         Preset* preset = m_collection->find_preset(preset_name, false);
         if (preset) {
+            // 生成新标签
             std::string new_label = preset->label(true);
 
             if (marker == LABEL_ITEM_PHYSICAL_PRINTER)

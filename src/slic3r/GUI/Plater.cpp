@@ -3831,12 +3831,18 @@ void Sidebar::update_all_preset_comboboxes(bool reload_printer_view)
     p_mainframe->m_tabpanel->SetSelection(p_mainframe->m_tabpanel->GetSelection());
 }
 
+// 根据变化的预设类型，刷新主界面左侧的相关控件
 void Sidebar::update_presets(Preset::Type preset_type)
 {
     PresetBundle &preset_bundle = *wxGetApp().preset_bundle;
     const auto print_tech = preset_bundle.printers.get_edited_preset().printer_technology();
 
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": enter, preset_type %1%")%preset_type;
+    
+    // TYPE_FILAMENT:同步当前编辑的耗材到对应槽位，刷新所有耗材下拉框和动态耗材列表，并通知 Plater 耗材使用情况变化
+    // TYPE_PRINT: 获取打印参数 Tab，刷新其预设下拉框
+    // TYPE_SLA_PRINT、TYPE_SLA_MATERIAL: 当前分支没有实际刷新操作
+    // TYPE_PRINTER: 根据打印机型号控制 U1 同步按钮的显示，刷新全部预设下拉框，更新打印机 Tab，并按打印机结构更新画布排列方向
     switch (preset_type) {
     case Preset::TYPE_FILAMENT:
     {
@@ -3848,7 +3854,10 @@ void Sidebar::update_presets(Preset::Type preset_type)
 #else
         const size_t filament_cnt = p->combos_filament.size();
 #endif
+        // 读取当前编辑页显示的耗材预设名称
         const std::string &name = preset_bundle.filaments.get_selected_preset_name();
+        // 若 editing_filament >= 0，把该名称设置到正在编辑的耗材槽
+        // 否则，仅在只有一个耗材槽时，检查兼容性后同步槽位
         if (p->editing_filament >= 0) {
             preset_bundle.set_filament_preset(p->editing_filament, name);
         } else if (filament_cnt == 1) {
@@ -3860,11 +3869,14 @@ void Sidebar::update_presets(Preset::Type preset_type)
 
         }
 
+        // 遍历所有的耗材槽位，对每个耗材下拉都调用update()
         for (size_t i = 0; i < filament_cnt; i++)
             p->combos_filament[i]->update();
 
+        // 更新动态耗材列表
         update_dynamic_filament_list();
 
+        // 通知耗材使用变化
         p->plater->notify_filament_usage_changed();
 
         break;

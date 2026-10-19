@@ -2985,13 +2985,20 @@ size_t PresetCollection::update_compatible_internal(const PresetWithVendorProfil
 
 // Update a dirty flag of the current preset
 // Return true if the dirty flag changed.
+// 负责重新计算当前选中预设的脏态，并把结果写回预设对象
 bool PresetCollection::update_dirty()
 {
+    // 获取当前选择预设的脏态
     bool was_dirty = this->get_selected_preset().is_dirty;
+
+    // 判断当前是否已经标脏态
     bool is_dirty  = current_is_dirty();
+    
+    // 更新当前选择和编辑预设的脏态标识
     this->get_selected_preset().is_dirty = is_dirty;
     this->get_edited_preset().is_dirty = is_dirty;
 
+    // 返回值表示是否发生了切换
     return was_dirty != is_dirty;
 }
 
@@ -3388,24 +3395,34 @@ bool PresetCollection::select_preset_by_name_strict(const std::string &name)
 }
 
 // Merge one vendor's presets with the other vendor's presets, report duplicates.
+// other:待合并的预设集合
+// new_vendors:合并后的厂商表，用来把预设中的 vendor 指针改指向新集合里的 VendorProfile
 std::vector<std::string> PresetCollection::merge_presets(PresetCollection &&other, const VendorMap &new_vendors)
 {
     std::vector<std::string> duplicates;
     for (Preset &preset : other.m_presets) {
+        // 跳过默认预设和外部预设
         if (preset.is_default || preset.is_external)
             continue;
         Preset key(m_type, preset.name);
+
+        // 从 m_num_default_presets 之后开始，用 lower_bound 按完整预设名称寻找插入位置；默认预设所在的前段不参与查找
         auto it = std::lower_bound(m_presets.begin() + m_num_default_presets, m_presets.end(), key);
+
         if (it == m_presets.end() || it->name != preset.name) {
             if (preset.vendor != nullptr) {
                 // Re-assign a pointer to the vendor structure in the new PresetBundle.
                 auto it = new_vendors.find(preset.vendor->id);
                 assert(it != new_vendors.end());
+                // 更新perset.vendor的指向
                 preset.vendor = &it->second;
             }
+            
+            // 添加到m_presets中
             m_presets.emplace(it, std::move(preset));
         } else {
             std::string default_vendor = std::string(PresetBundle::SM_BUNDLE);
+            // 如果新预设的厂商名称等于 PresetBundle::SM_BUNDLE，代码会把这条 Snapmaker 预设也插到同名项前面
             if (preset.vendor->name == default_vendor) {
                 if (preset.vendor != nullptr) {
                     // Re-assign a pointer to the vendor structure in the new PresetBundle.
@@ -3415,6 +3432,8 @@ std::vector<std::string> PresetCollection::merge_presets(PresetCollection &&othe
                 }
                 m_presets.emplace(it, std::move(preset));
             }
+
+            // 计入到重名预设中
             duplicates.emplace_back(std::move(preset.name));
         }
             

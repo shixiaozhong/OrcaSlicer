@@ -113,6 +113,7 @@ protected:
     bool m_suppress_change { true };
 
     // BBS: ams
+    // 当前控件对应的耗材槽索引
     int  m_filament_idx       = -1;
     int m_first_ams_filament = 0;
     int m_last_ams_filament = 0;

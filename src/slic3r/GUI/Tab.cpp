@@ -1423,17 +1423,24 @@ void Tab::on_roll_back_value(const bool to_sys /*= true*/)
 
 // Update the combo box label of the selected preset based on its "dirty" state,
 // comparing the selected preset config with $self->{config}.
+// 编辑页在参数变化后使用的脏态与界面同步入口,本身不保存预设；它比较当前编辑配置与已选预设，更新星号及各参数的修改提示
 void Tab::update_dirty()
 {
     if (m_postpone_update_ui)
         return;
 
+    // 存在编辑页预设下拉框
     if (m_presets_choice) {
+        // 编辑页内预设下拉框更新脏态
         m_presets_choice->update_dirty();
+
+        // 通知侧栏刷新
         on_presets_changed();
     } else {
         m_presets->update_dirty();
     }
+
+    // 计算哪些参数与原预设、父预设不同，并更新参数的高亮、恢复按钮等界面状态
     update_changed_ui();
 }
 
@@ -2469,14 +2476,18 @@ void Tab::apply_config_from_cache()
 // to update the filament colors of the selection boxes,
 // to update the "dirty" flags of the selection boxes,
 // to update number of "filament" selection boxes when the number of extruders change.
+// 
 void Tab::on_presets_changed()
 {
     if (wxGetApp().plater() == nullptr)
         return;
 
     // Instead of PostEvent (EVT_TAB_PRESETS_CHANGED) just call update_presets
+    // 刷新侧边栏预设控件
     wxGetApp().plater()->sidebar().update_presets(m_type);
 
+    // 更新打印板的渲染选项
+    // 根据 is_bbl_vendor() 切换渲染选项如果使用拓竹厂商预设，还根据打印机预设是否有校准线决定是否显示校准线
     bool is_bbl_vendor_preset = wxGetApp().preset_bundle->is_bbl_vendor();
     if (is_bbl_vendor_preset) {
         wxGetApp().plater()->get_partplate_list().set_render_option(true, true);
@@ -2491,6 +2502,7 @@ void Tab::on_presets_changed()
     }
 
     // Printer selected at the Printer tab, update "compatible" marks at the print and filament selectors.
+    // 遍历 m_dependent_tabs，对每个 Tab 先应用缓存配置，再重新加载当前预设，随后清空这个列表
     for (auto t: m_dependent_tabs)
     {
         Tab* tab = wxGetApp().get_tab(t);
@@ -2504,6 +2516,7 @@ void Tab::on_presets_changed()
     // to avoid needless preset loading from update() function
     m_dependent_tabs.clear();
 
+    // 更新项目整体脏态
     wxGetApp().plater()->update_project_dirty_from_presets();
 }
 
