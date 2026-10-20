@@ -1235,7 +1235,9 @@ struct Sidebar::priv
 
     wxPanel *scrolled;
     PlaterPresetComboBox *combo_print;
+    // 侧栏中各耗材槽对应的预设下拉框集合
     std::vector<PlaterPresetComboBox*> combos_filament;
+    // 当前正在编辑的耗材槽索引，-1表示没有指定槽位
     int editing_filament = -1;
     wxBoxSizer *sizer_filaments;
     PlaterPresetComboBox *combo_sla_print;
@@ -1262,6 +1264,7 @@ struct Sidebar::priv
     ScalableButton *  m_bpButton_ams_filament;
     ScalableButton *  m_bpButton_set_filament;
     ScalableButton *  m_bpButton_sync_filament = nullptr;
+    // 当前打开操作菜单的耗材槽索引，从0开始
     int                         m_menu_filament_id = -1;
     wxPanel* m_panel_filament_content;
     wxScrolledWindow* m_scrolledWindow_filament_content;
@@ -8317,6 +8320,7 @@ void Sidebar::on_filaments_delete(size_t filament_id)
     }
 }
 
+// 打开菜单所对应耗材槽的参数编辑界面，并记录当前正在编辑哪个耗材槽
 void Sidebar::edit_filament() {
     p->editing_filament = -1;
     if (p->m_menu_filament_id >= 0 && p->m_menu_filament_id < p->combos_filament.size() &&
@@ -14903,6 +14907,7 @@ void Plater::priv::set_current_panel(wxPanel* panel, bool no_slice)
 }
 
 // BBS
+// 侧边栏下拉框选择事件的分发入口：根据触发事件的控件类型，决定切换预设还是切换打印板类型，并刷新相关 UI
 void Plater::priv::on_combobox_select(wxCommandEvent &evt)
 {
     //auto* pNotice = q->get_notification_manager();
@@ -14914,16 +14919,21 @@ void Plater::priv::on_combobox_select(wxCommandEvent &evt)
     //}
 
     PlaterPresetComboBox* preset_combo_box = dynamic_cast<PlaterPresetComboBox*>(evt.GetEventObject());
+    // 如果是预设下拉框
     if (preset_combo_box) {
+        // 切换预设
         this->on_select_preset(evt);
+        // 刷新打印机缩略图
         sidebar->update_printer_thumbnail();
 
+        // 如果是打印机预设时，刷新喷嘴配置
         Preset::Type preset_type = preset_combo_box->get_type();
         if (preset_type == Preset::TYPE_PRINTER) {
             sidebar->update_nozzle_settings(true);
         }
     }
     else {
+        // 不是预设下拉框，处理打印板类型
         this->on_select_bed_type(evt);
     }
 }
@@ -14991,6 +15001,7 @@ void Plater::priv::on_select_bed_type(wxCommandEvent &evt)
     }
 }
 
+// 把侧边栏中选择的预设应用到当前项目，并同步配置、界面、模型位置和切片状态
 void Plater::priv::on_select_preset(wxCommandEvent &evt)
 {
     PlaterPresetComboBox* combo = static_cast<PlaterPresetComboBox*>(evt.GetEventObject());
@@ -15001,13 +15012,17 @@ void Plater::priv::on_select_preset(wxCommandEvent &evt)
     // So, use GetSelection() from event parameter
     int selection = evt.GetSelection();
 
+    // 读取选中条目的marker，判断是否是添加打印机
     auto marker = reinterpret_cast<size_t>(combo->GetClientData(selection));
     if (PresetComboBox::LabelItemType::LABEL_ITEM_WIZARD_ADD_PRINTERS == marker) {
         sidebar->create_printer_preset();
         return;
     }
 
+    // 获取当前耗材槽索引
     auto idx = combo->get_filament_idx();
+
+    // 保存切换前的打印盘和模型信息
 
     // BBS:Save the plate parameters before switching
     PartPlateList& old_plate_list = this->partplate_list;
@@ -15035,24 +15050,38 @@ void Plater::priv::on_select_preset(wxCommandEvent &evt)
     //! instead of
     //!     combo->GetStringSelection().ToUTF8().data());
 
+    // 将显示名称转换为预设实际名称
     std::string preset_name = wxGetApp().preset_bundle->get_preset_name_by_alias(preset_type,
         Preset::remove_suffix_modified(combo->GetString(selection).ToUTF8().data()));
 
+    // 如果切换的是耗材，更新对应耗材槽
     if (preset_type == Preset::TYPE_FILAMENT) {
+        // 设置当前耗材槽位的预设
         wxGetApp().preset_bundle->set_filament_preset(idx, preset_name);
+
+        // 更新项目修改状态
         wxGetApp().plater()->update_project_dirty_from_presets();
+
+        // 将当前预设选择同步到app_config
         wxGetApp().preset_bundle->export_selections(*wxGetApp().app_config);
+
+        // 更新动态耗材列表和混色面板
         sidebar->update_dynamic_filament_list();
         sidebar->update_color_mix_panel();
+        
+        // 比较切换前后是否属于支撑耗材，如果属性变化，则重新计算冲刷量
         bool flag_is_change = is_support_filament(idx);
         if (flag != flag_is_change) {
             sidebar->auto_calc_flushing_volumes(idx);
         }
     }
+
+    // 决定如何执行预设切换
     bool select_preset = !combo->selection_is_changed_according_to_physical_printers();
     // TODO: ?
     if (preset_type == Preset::TYPE_FILAMENT && sidebar->is_multifilament()) {
         // Only update the plater UI for the 2nd and other filaments.
+        // 多耗材模式下，更新耗材槽之后，只刷新这个下拉框
         combo->update();
     }
     else if (select_preset) {

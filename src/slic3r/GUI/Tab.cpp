@@ -5919,21 +5919,27 @@ void Tab::update_preset_choice()
 // Called by the UI combo box when the user switches profiles, and also to delete the current profile.
 // Select a preset by a name.If !defined(name), then the default preset is selected.
 // If the current profile is modified, user is asked to save the changes.
+// 处理未保存修改，检查关联预设的兼容性，执行选择或删除，再同步参数页和侧栏
 bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/, const std::string& last_selected_ph_printer_name/* =""*/, bool force_select)
 {
     BOOST_LOG_TRIVIAL(info) << boost::format("select preset, name %1%, delete_current %2%")
         %preset_name %delete_current;
     if (preset_name.empty()) {
+        // 删除当前预设
         if (delete_current) {
             // Find an alternate preset to be selected after the current preset is deleted.
             const std::deque<Preset> &presets 		= m_presets->get_presets();
             size_t    				  idx_current   = m_presets->get_idx_selected();
+            
             // Find the next visible preset.
             size_t 				      idx_new       = idx_current + 1;
+            // 向后找到后面的第一个可见预设
             if (idx_new < presets.size())
                 for (; idx_new < presets.size() && ! presets[idx_new].is_visible; ++ idx_new) ;
+            // 没有则向前找
             if (idx_new == presets.size())
                 for (idx_new = idx_current - 1; idx_new > 0 && ! presets[idx_new].is_visible; -- idx_new);
+            
             preset_name = presets[idx_new].name;
             BOOST_LOG_TRIVIAL(info) << boost::format("cause by delete current ,choose the next visible, idx %1%, name %2%")
                                         %idx_new %preset_name;
@@ -5941,9 +5947,12 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
             //BBS select first visible item first
             const std::deque<Preset> &presets 		= this->m_presets->get_presets();
             size_t 				      idx_new = 0;
+            // 寻找第一个可见预设
             if (idx_new < presets.size())
                 for (; idx_new < presets.size() && ! presets[idx_new].is_visible; ++ idx_new) ;
+            
             preset_name = presets[idx_new].name;
+            // 如果没有可见预设，使用默认预设作为兜底
             if (idx_new == presets.size()) {
                 // If no name is provided, select the "-- default --" preset.
                 preset_name = m_presets->default_preset().name;
@@ -5952,6 +5961,7 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
                                         %idx_new %preset_name;
         }
     }
+
     //BBS: add project embedded preset logic and refine is_external
     assert(! delete_current || (m_presets->get_edited_preset().name != preset_name && (m_presets->get_edited_preset().is_user() || m_presets->get_edited_preset().is_project_embedded)));
     //assert(! delete_current || (m_presets->get_edited_preset().name != preset_name && m_presets->get_edited_preset().is_user()));
@@ -5962,6 +5972,8 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
     bool no_transfer = false;
     bool technology_changed = false;
     m_dependent_tabs.clear();
+
+    // 
     if ((m_presets->type() == Preset::TYPE_FILAMENT) && !preset_name.empty())
     {
         Preset *to_be_selected = m_presets->find_preset(preset_name, false, true);
@@ -5981,6 +5993,8 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
     }
     else if (printer_tab)
         no_transfer = true;
+
+    // 
     if (current_dirty && ! may_discard_current_dirty_preset(nullptr, preset_name, no_transfer) && !force_select) {
         canceled = true;
         BOOST_LOG_TRIVIAL(info) << boost::format("current dirty and cancelled");
@@ -6060,6 +6074,8 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
     bool        delete_third_printer = false;
     std::deque<Preset> filament_presets;
     std::deque<Preset> process_presets;
+
+    // 执行删除操作
     if (! canceled && delete_current) {
         // Delete the file and select some other reasonable preset.
         // It does not matter which preset will be made active as the preset will be re-selected from the preset_name variable.
@@ -6126,9 +6142,12 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
         on_presets_changed();
     } else {
         BOOST_LOG_TRIVIAL(info) << boost::format("successfully delete, will update compatibility");
+        
+        // 如果已经是脏态，恢复当前预设的参数
         if (current_dirty)
             m_presets->discard_current_changes();
 
+        // 按照名称选择，
         const bool is_selected = m_presets->select_preset_by_name(preset_name, false) || delete_current;
         assert(m_presets->get_edited_preset().name == preset_name || ! is_selected);
         // Mark the print & filament enabled if they are compatible with the currently selected preset.
@@ -6139,11 +6158,15 @@ bool Tab::select_preset(std::string preset_name, bool delete_current /*=false*/,
         	       on_page                                ? PresetSelectCompatibleType::Never  :
         	       show_incompatible_presets              ? PresetSelectCompatibleType::OnlyIfWasCompatible : PresetSelectCompatibleType::Always;
         };
+
+        // 修改丢弃后会清除预设的脏态，但不会把局部变量 current_dirty 改成 false，保存的是进入函数时候的状态
         if (current_dirty || delete_current || print_tab || printer_tab)
+            // 执行兼容性检查
             m_preset_bundle->update_compatible(
             	update_compatible_type(technology_changed, print_tab,   (print_tab ? this : wxGetApp().get_tab(Preset::TYPE_PRINT))->m_show_incompatible_presets),
             	update_compatible_type(technology_changed, false, 		wxGetApp().get_tab(Preset::TYPE_FILAMENT)->m_show_incompatible_presets));
-        // Initialize the UI from the current preset.
+        
+                // Initialize the UI from the current preset.
         if (printer_tab)
             static_cast<TabPrinter*>(this)->update_pages();
 

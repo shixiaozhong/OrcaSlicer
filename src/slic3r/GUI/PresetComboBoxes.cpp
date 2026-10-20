@@ -987,6 +987,7 @@ void PlaterPresetComboBox::OnSelect(wxCommandEvent &evt)
     evt.Skip();
 }
 
+// 从侧栏预设下拉框进入对应的参数编辑界面；如果是耗材，还会先同步所选预设和耗材槽索引
 bool PlaterPresetComboBox::switch_to_tab()
 {
     Tab* tab = wxGetApp().get_tab(m_type);
@@ -996,10 +997,15 @@ bool PlaterPresetComboBox::switch_to_tab()
     const Preset* selected_filament_preset = nullptr;
     if (m_type == Preset::TYPE_FILAMENT)
     {
+        // 获取当前选中的预设
         const std::string& selected_preset = GetString(GetSelection()).ToUTF8().data();
+        // 判断是否需要切换预设，依照是否存在已修改标记，如果已经存在，则跳过预设选择，继续显示编辑页面
         if (!boost::algorithm::starts_with(selected_preset, Preset::suffix_modified()))
         {
+            // 获取预设名称
             const std::string& preset_name = wxGetApp().preset_bundle->filaments.get_preset_name_by_alias(selected_preset);
+
+            // 选择预设，同步索引
             if (wxGetApp().get_tab(m_type)->select_preset(preset_name))
                 wxGetApp().get_tab(m_type)->get_combo_box()->set_filament_idx(m_filament_idx);
             else {
@@ -1031,12 +1037,17 @@ bool PlaterPresetComboBox::switch_to_tab()
     */
 
     //BBS  Select NoteBook Tab params
+    // 根据tab的所在位置显示编辑界面
+    // 如果是主界面的params_panel(): 切换到MainFrame::tp3DEditor
+    // 如果是其他位置：弹出参数对话框，并调用 OnActivate() 激活 Tab
     if (tab->GetParent() == wxGetApp().params_panel())
         wxGetApp().mainframe->select_tab(MainFrame::tp3DEditor);
     else {
         wxGetApp().params_dialog()->Popup();
         tab->OnActivate();
     }
+
+    // 恢复上次选中的设置分类
     tab->restore_last_select_item();
 
     return true;
