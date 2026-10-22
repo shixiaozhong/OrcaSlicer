@@ -7347,6 +7347,7 @@ bool GUI_App::may_switch_to_SLA_preset(const wxString& caption)
     return true;
 }
 
+// 配置向导的应用层入口：根据入口类型打开对应页面，等待用户操作，再根据结果刷新预设和主界面
 bool GUI_App::run_wizard(ConfigWizard::RunReason reason, ConfigWizard::StartPage start_page)
 {
     wxCHECK_MSG(mainframe != nullptr, false, "Internal error: Main frame not created / null");
@@ -7356,6 +7357,7 @@ bool GUI_App::run_wizard(ConfigWizard::RunReason reason, ConfigWizard::StartPage
     if (strFinish == "false" || strFinish.empty())
         pStyle = wxCAPTION | wxTAB_TRAVERSAL;
 
+    // 创建GuideFrame并选择起始页面
     GuideFrame wizard(this, pStyle);
     auto page = start_page == ConfigWizard::SP_WELCOME ? GuideFrame::BBL_WELCOME :
                 start_page == ConfigWizard::SP_FILAMENTS ? GuideFrame::BBL_FILAMENT_ONLY :
@@ -7373,6 +7375,7 @@ bool GUI_App::run_wizard(ConfigWizard::RunReason reason, ConfigWizard::StartPage
         flush_logs();
     }
 
+    // 成功后刷新主页面，让参数页、喷嘴控件以及其他相关界面同步到新状态
     if (res) {
         load_current_presets();
         wxGetApp().sidebar().update_nozzle_settings();

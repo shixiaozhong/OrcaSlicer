@@ -748,8 +748,16 @@ static std::string get_first_added_preset(const std::map<std::string, std::strin
     return *diff.begin();
 }
 
+// 把用户在GuideFrame中选好的打印机和材料配置，正式应用到当前程序，并在需要时重新加载预设
+// app_config           当前应用配置，保存启用的品牌、型号、喷嘴及材料
+// preset_bundle        当前运行时的预设集合，用于重新加载预设和更新选择
+// updater              将缺失的厂商预设包从资源目录安装到用户数据目录
+// apply_keeped_changes 输出标志：是否需要在加载完成后重新应用用户保留的参数修改
 bool GuideFrame::apply_config(AppConfig *app_config, PresetBundle *preset_bundle, const PresetUpdater *updater, bool& apply_keeped_changes)
 {
+    // m_appconfig_new表示用户的新选择
+
+    // 比较新旧配置，找出需要处理的新旧厂商包
     const auto enabled_vendors = m_appconfig_new.vendors();
     const auto old_enabled_vendors = app_config->vendors();
 
@@ -760,9 +768,12 @@ bool GuideFrame::apply_config(AppConfig *app_config, PresetBundle *preset_bundle
     std::vector<std::string> install_bundles;
     std::vector<std::string> remove_bundles;
     const auto vendor_dir = (boost::filesystem::path(Slic3r::data_dir()) / PRESET_SYSTEM_DIR).make_preferred();
+
+    // 遍历新添加的厂商
     for (const auto &it : enabled_vendors) {
         if (it.second.size() > 0) {
             auto vendor_file = vendor_dir/(it.first + ".json");
+            // 不存在就添加到install_bundles
             if (!fs::exists(vendor_file)) {
                 install_bundles.emplace_back(it.first);
             }
@@ -770,10 +781,12 @@ bool GuideFrame::apply_config(AppConfig *app_config, PresetBundle *preset_bundle
     }
 
     //add the removed vendor bundles
+    // 遍历旧的厂商
     for (const auto &it : old_enabled_vendors) {
         if (it.second.size() > 0) {
             if (enabled_vendors.find(it.first) != enabled_vendors.end())
                 continue;
+            // 如果不包含了，添加到remove_bundles中
             auto vendor_file = vendor_dir/(it.first + ".json");
             if (fs::exists(vendor_file)) {
                 remove_bundles.emplace_back(it.first);
@@ -781,6 +794,7 @@ bool GuideFrame::apply_config(AppConfig *app_config, PresetBundle *preset_bundle
         }
     }
 
+    // 检查厂商选择或者耗材发生变化
     check_unsaved_preset_changes = (enabled_vendors != old_enabled_vendors) || (enabled_filaments != old_enabled_filaments);
     wxString header = _L("The configuration package is changed in previous Config Guide");
     wxString caption = _L("Configuration package changed");
@@ -790,6 +804,7 @@ bool GuideFrame::apply_config(AppConfig *app_config, PresetBundle *preset_bundle
         !wxGetApp().check_and_keep_current_preset_changes(caption, header, act_btns, &apply_keeped_changes))
         return false;
 
+    // 安装缺失的厂商预设包
     if (install_bundles.size() > 0) {
         // Install bundles from resources.
         // Don't create snapshot - we've already done that above if applicable.
@@ -847,6 +862,8 @@ bool GuideFrame::apply_config(AppConfig *app_config, PresetBundle *preset_bundle
             variant.clear();
         return std::string();
     };
+    
+    // 找出应该优先选中的新打印机
     // Prusa printers are considered first, then 3rd party.
     if (preferred_model = get_preferred_printer_model(PresetBundle::SM_BUNDLE, preferred_variant);
         preferred_model.empty()) {
@@ -870,14 +887,17 @@ bool GuideFrame::apply_config(AppConfig *app_config, PresetBundle *preset_bundle
     //get_first_added_material_preset(AppConfig::SECTION_FILAMENTS, first_added_filament);
 
     //update the app_config
+    // 更新app_config
     app_config->set_section(AppConfig::SECTION_FILAMENTS, enabled_filaments);
     app_config->set_vendors(m_appconfig_new);
 
+    // 重新加载预设
     if (check_unsaved_preset_changes)
         preset_bundle->load_presets(*app_config, ForwardCompatibilitySubstitutionRule::Enable,
                                     {preferred_model, preferred_variant, first_added_filament, std::string()});
 
     // Update the selections from the compatibilty.
+    // 最终实际选中的打印机、工艺、材料及相关状态记录回 AppConfig
     preset_bundle->export_selections(*app_config);
 
     return true;
@@ -891,6 +911,7 @@ bool GuideFrame::run()
 
     //p->set_run_reason(reason);
     //p->set_start_page(start_page);
+    // 保存当前的预设选择到AppConfig
     app.preset_bundle->export_selections(*app.app_config);
 
     BOOST_LOG_TRIVIAL(info) << "GuideFrame before ShowModal";
@@ -905,10 +926,13 @@ bool GuideFrame::run()
         this->SetPosition(wxPoint(guide_x, guide_y));
     }
 
+    // 显示GuideFrame
     int result = this->ShowModal();
+
     if (result == wxID_OK) {
         bool apply_keeped_changes = false;
         BOOST_LOG_TRIVIAL(info) << "GuideFrame returned ok";
+        // 应用选择，安装预设包，重新加载预设
         if (! this->apply_config(app.app_config, app.preset_bundle, app.preset_updater, apply_keeped_changes))
             return false;
 

@@ -2102,6 +2102,7 @@ void PresetBundle::load_selections(AppConfig &config, const PresetPreferences& p
 
 // Export selections (current print, current filaments, current printer) into config.ini
 //BBS: change directories by design
+// 把当前选中的打印机、工艺、各材料槽预设，以及颜色、冲刷量等状态，记录到传入的 AppConfig 中，供后续恢复选择
 void PresetBundle::export_selections(AppConfig &config)
 {
 	assert(this->printers.get_edited_preset().printer_technology() != ptFFF || filament_presets.size() >= 1);
