@@ -645,13 +645,19 @@ void Preset::remove_files()
 }
 
 //BBS: add logic for only difference save
+// 将当前预设的配置写入 JSON 文件，并保存配套的 .info 元数据文件
+// parent_config是用于比较的父配置，非空表示以该父预设为标准，构造需要保存的差异配置
+// 为空，保存当前完整配置，必要时补充 filament_id
 void Preset::save(DynamicPrintConfig* parent_config)
 {
     //BBS: add project embedded preset logic
+    // 项目内嵌预设直接返回
     if (this->is_project_embedded)
         return;
     //BBS: change to json format
     //this->config.save(this->file);
+
+    // 确定来源标记，创建输出目录
     std::string from_str;
     if (this->is_user())
         from_str = std::string("User");
@@ -665,6 +671,7 @@ void Preset::save(DynamicPrintConfig* parent_config)
     boost::filesystem::create_directories(fs::path(this->file).parent_path());
 
     //BBS: only save difference if it has parent
+    // 如果存在父预设，就只保存差异部分
     if (parent_config) {
         auto option_differs_from_default = [](const ConfigBase &cfg, const t_config_option_key &opt_key, const ConfigOption *opt) {
             if (opt == nullptr)
@@ -689,6 +696,7 @@ void Preset::save(DynamicPrintConfig* parent_config)
                 dirty_options.emplace_back(opt_key);
         }
 
+        // 显式保留多流量支持声明
         keep_flow_support_in_differential_save(*this, dirty_options);
 
         std::sort(dirty_options.begin(), dirty_options.end());
@@ -703,14 +711,17 @@ void Preset::save(DynamicPrintConfig* parent_config)
         }
         temp_config.save_to_json(this->file, this->name, from_str, this->version.to_string(), this->custom_defined);
     } else if (!filament_id.empty() && inherits().empty()) {
+        // 复制完整配置，并把对象成员 filament_id 补入输出配置
         DynamicPrintConfig temp_config = config;
         temp_config.set_key_value(BBL_JSON_KEY_FILAMENT_ID, new ConfigOptionString(filament_id));
         temp_config.save_to_json(this->file, this->name, from_str, this->version.to_string(), this->custom_defined);
     } else {
+        // 直接保存完整配置
         this->config.save_to_json(this->file, this->name, from_str, this->version.to_string(), this->custom_defined);
     }
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " save config for: " << this->name << " and filament_id: " << filament_id << " and base_id: " << this->base_id;
 
+    // 保存.info元数据
     fs::path idx_file(this->file);
     idx_file.replace_extension(".info");
     this->save_info(idx_file.string());
@@ -2552,8 +2563,15 @@ std::map<std::string, std::vector<Preset const *>> PresetCollection::get_filamen
 }
 
 //BBS: add project embedded preset logic
+// 把一份预设配置保存为指定名称，更新集合中的预设，切换当前选择，并按继承关系决定如何写入磁盘
+// new_name	        目标名称。找到同名预设则尝试覆盖，否则创建新预设
+// detach	        是否解除继承。为 true 时清空 inherits；覆盖分支还会清理厂商、别名等信息
+// save_to_project	新建预设时决定 is_project_embedded。覆盖分支不使用它改变该标记
+// _curr_preset	    可选的配置来源。非空时复制它，否则复制当前编辑副本 m_edited_preset
+// _current_printer	可选的打印机信息，仅用于新建特定耗材预设时补充 compatible_printers
 void PresetCollection::save_current_preset(const std::string &new_name, bool detach, bool save_to_project, Preset* _curr_preset, const Preset* _current_printer)
 {
+    // 复制配置来源
     Preset curr_preset = _curr_preset ? *_curr_preset : m_edited_preset;
     //BBS: add lock logic for sync preset in background
     std::string final_inherits;
@@ -2561,6 +2579,7 @@ void PresetCollection::save_current_preset(const std::string &new_name, bool det
     // 1) Find the preset with a new_name or create a new one,
     // initialize it with the edited config.
     auto it = this->find_preset_internal(new_name);
+    // 覆盖已有预设
     if (it != m_presets.end() && it->name == new_name) {
         // Preset with the same name found.
         Preset &preset = *it;
@@ -2572,11 +2591,14 @@ void PresetCollection::save_current_preset(const std::string &new_name, bool det
             unlock();
             return;
         }
+
+        // 替换config信息
         // Overwriting an existing preset.
         preset.config = std::move(curr_preset.config);
         // The newly saved preset will be activated -> make it visible.
         preset.is_visible = true;
         //TODO: remove the detach logic
+        // 如果需要解除继承关系
         if (detach) {
             // Clear the link to the parent profile.
             preset.vendor = nullptr;
@@ -2588,6 +2610,7 @@ void PresetCollection::save_current_preset(const std::string &new_name, bool det
         }
         //BBS: add lock logic for sync preset in background
 
+        // 根据集合类型，把配置内部的预设 ID 更新为目标名称
         if (m_type == Preset::TYPE_PRINT)
             preset.config.option<ConfigOptionString>("print_settings_id", true)->value = new_name;
         else if (m_type == Preset::TYPE_FILAMENT)
@@ -2652,10 +2675,14 @@ void PresetCollection::save_current_preset(const std::string &new_name, bool det
         final_inherits = inherits;
         unlock();
     }
+
     // 2) Activate the saved preset.
+    // 强制选中保存结果，重建编辑状态
     this->select_preset_by_name(new_name, true);
+
     // 2) Store the active preset to disk.
     //BBS: only save difference for user preset
+    // 根据继承关系写入磁盘
     Preset* parent_preset = nullptr;
     if (!final_inherits.empty()) {
         parent_preset = this->find_preset(final_inherits, false, true);
@@ -2664,6 +2691,8 @@ void PresetCollection::save_current_preset(const std::string &new_name, bool det
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " base_id: " << parent_preset->setting_id;
         }
     }
+
+    // 按照是否有父预设，采用不同的保存行为
     if (parent_preset)
         this->get_selected_preset().save(&(parent_preset->config));
     else

@@ -6678,6 +6678,15 @@ void Tab::transfer_options(const std::string &name_from, const std::string &name
 // Wizard calls save_preset with a name "My Settings", otherwise no name is provided and this method
 // opens a Slic3r::GUI::SavePresetDialog dialog.
 //BBS: add project embedded preset relate logic
+
+// 配置页面的保存入口：保存当前正在编辑的预设，选中保存后的预设，并更新同步标记、兼容性和相关界面
+// 支持覆盖已有用户预设，也支持另存为新预设
+
+// name             保存目标名称。为空时通常弹出保存对话框；非空时直接进入保存流程
+// detach           是否解除与父预设的继承关系。为 true 时底层清除 inherits 等关联信息
+// save_to_project  是否作为项目内嵌预设。若进入保存对话框，该值会被对话框选项覆盖
+// from_input       是否使用其他界面提供的名称，通过隐藏的保存对话框执行相关处理
+// input_name       from_input == true 时使用的名称，会覆盖 name。
 void Tab::save_preset(std::string name /*= ""*/, bool detach, bool save_to_project, bool from_input, std::string input_name )
 {
     // since buttons(and choices too) don't get focus on Mac, we set focus manually
@@ -6719,9 +6728,11 @@ void Tab::save_preset(std::string name /*= ""*/, bool detach, bool save_to_proje
         _current_printer = const_cast<Preset*>(&wxGetApp().preset_bundle->printers.get_selected_preset_base());
     }
     // Save the preset into Slic3r::data_dir / presets / section_name / preset_name.json
+    // 保存新预设, 同名则覆盖，否则复制当前编辑预设创建新预设
     m_presets->save_current_preset(name, detach, save_to_project, nullptr, _current_printer);
 
     //BBS create new settings
+    // 重新查找，获取新添加的预设
     new_preset = m_presets->find_preset(name, false, true);
     //Preset* preset = &m_presets.preset(it - m_presets.begin(), true);
     if (!new_preset) {
