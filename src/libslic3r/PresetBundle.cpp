@@ -1942,6 +1942,7 @@ void PresetBundle::update_selections(AppConfig &config)
 
 // Load selections (current print, current filaments, current printer) from config.ini
 // This is done on application start up or after updates are applied.
+// 根据用户配置和调用方传入的首选项，确定当前使用哪套打印机、工艺和耗材预设，并恢复相关状态、修正不兼容的选择
 void PresetBundle::load_selections(AppConfig &config, const PresetPreferences& preferred_selection/* = PresetPreferences()*/)
 {
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": enter, preferred printer_model_id %1%")%preferred_selection.printer_model_id;
@@ -1984,11 +1985,17 @@ void PresetBundle::load_selections(AppConfig &config, const PresetPreferences& p
     // Do not select alternate profiles for the print / filament profiles as those presets
     // will be selected by the following call of this->update_compatible(PresetSelectCompatibleType::Always).
 
+    // 用户配置里上次选中的打印机
     const Preset *initial_printer = printers.find_preset(initial_printer_profile_name);
     // If executed due to a Config Wizard update, preferred_printer contains the first newly installed printer, otherwise nullptr.
+    
+    // 调用方指定机型 + 变体对应的系统预设
     const Preset *preferred_printer = printers.find_system_preset_by_model_and_variant(preferred_selection.printer_model_id, preferred_selection.printer_variant);
+    
+    // 特定条件下唯一可见的非占位打印机
     const Preset *fallback_printer = preferred_printer == nullptr && is_default_printer_selection(initial_printer_profile_name) ?
         unique_visible_printer() : nullptr;
+    
     const Preset *selected_printer = preferred_printer ? preferred_printer : fallback_printer ? fallback_printer : initial_printer;
     printers.select_preset_by_name(selected_printer ? selected_printer->name : initial_printer_profile_name, true);
     CNumericLocalesSetter locales_setter;
