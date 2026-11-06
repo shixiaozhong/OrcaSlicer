@@ -11647,6 +11647,11 @@ void read_binary_stl(const std::string& filename, std::string& model_id, std::st
 }
 
 // BBS: backup & restore
+// 所有文件导入的总入口：拖拽/打开 STL、OBJ、STEP、AMF、3MF 等文件，最终都会走到这里
+// 它负责把磁盘文件解析成 Model，把配置、预设、多板数据、G-code 恢复到当前会话，并把新对象加入场景
+// input_files：待加载文件路径列表（Restore 模式下成对出现：真实路径 + 显示名）
+// strategy：加载策略
+// ask_multi:多文件聚合加载时，是否弹窗询问"合并为一个多零件对象"
 std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_files, LoadStrategy strategy, bool ask_multi)
 {
     std::vector<size_t> empty_result;

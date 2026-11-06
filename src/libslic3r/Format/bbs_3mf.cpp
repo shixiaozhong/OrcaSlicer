@@ -1333,9 +1333,18 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
     //BBS: add plate data related logic
         // add backup & restore logic
+    //  BBS/Orca 格式 3MF 反序列化的入口
+
+    // 输出参数：
+    // plate_data_list：多板数据
+    // project_presets: 项目内嵌配置
+    // config: 项目配置
+    // is_bbl_3mf:是否为 BBS/Orca 格式 3MF
+    // file_version: 生成器版本
     bool _BBS_3MF_Importer::load_model_from_file(const std::string& filename, Model& model, PlateDataPtrs& plate_data_list, std::vector<Preset*>& project_presets, DynamicPrintConfig& config,
         ConfigSubstitutionContext& config_substitutions, LoadStrategy strategy, bool& is_bbl_3mf, Semver& file_version, Import3mfProgressFn proFn, BBLProject *project, int plate_id)
     {
+        // 重置导入器全部状态
         m_version = 0;
         m_fdm_supports_painting_version = 0;
         m_seam_painting_version = 0;
@@ -1373,30 +1382,41 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         clear_errors();
 
         // restore
+        // Restore 模式，崩溃恢复
         if (m_load_restore) {
+            // 备份目录
             m_backup_path = filename.substr(0, filename.size() - 5);
             model.set_backup_path(m_backup_path);
+            
             try {
+                // 从备份目录读出原始工程路径存到 m_origin_file
                 if (boost::filesystem::exists(model.get_backup_path() + "/origin.txt"))
                     load_string_file(model.get_backup_path() + "/origin.txt", m_origin_file);
             } catch (...) {}
+            
             save_string_file(
                 model.get_backup_path() + "/lock.txt",
                 boost::lexical_cast<std::string>(get_current_pid()));
         }
         else {
+            // 普通加载：沿用 model 上已有的 m_backup_path
             m_backup_path = model.get_backup_path();
         }
+
         bool result = _load_model_from_file(filename, model, plate_data_list, project_presets, config, config_substitutions, proFn, project, plate_id);
+        // 解析过程中获取到
         is_bbl_3mf = m_is_bbl_3mf;
         if (m_bambuslicer_generator_version)
             file_version = *m_bambuslicer_generator_version;
+
         // save for restore
         if (result && m_load_aux && !m_load_restore) {
             save_string_file(model.get_backup_path() + "/origin.txt", filename);
         }
+
         if (m_load_restore && !result) // not clear failed backup data for later analyze
             model.set_backup_path("detach");
+        
         return result;
     }
 
@@ -1658,6 +1678,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
         mz_zip_archive archive;
         mz_zip_zero_struct(&archive);
 
+        // 通过局部对象保证函数退出时关闭 zip
         struct close_lock
         {
             mz_zip_archive * archive;
@@ -1677,6 +1698,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             return false;
         }
 
+        // 获取有多少个条目
         mz_uint num_entries = mz_zip_reader_get_num_files(&archive);
 
         mz_zip_archive_file_stat stat;
@@ -1685,18 +1707,26 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
         //BBS progress point
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ":" << __LINE__ << boost::format("import 3mf IMPORT_STAGE_READ_FILES\n");
+        
+        // 进度提示
         if (proFn) {
             proFn(IMPORT_STAGE_READ_FILES, 0, 3, cb_cancel);
             if (cb_cancel)
                 return false;
         }
+
         // BBS: load relationships
+        // 解析_rels/.rels，处理 relationship
         if (!_extract_xml_from_archive(archive, RELATIONSHIPS_FILE, _handle_start_relationships_element, _handle_end_relationships_element))
             return false;
+        
+        // m_start_part_path 存储模型入口
         if (m_start_part_path.empty())
             return false;
+        
         // BBS: load sub models (Production Extension)
         std::string sub_rels = m_start_part_path;
+        // 构造对应的.rels 路径，查找引用的子模型
         sub_rels.insert(boost::find_last(sub_rels, "/").end() - sub_rels.begin(), "_rels/");
         sub_rels.append(".rels");
         if (sub_rels.front() == '/') sub_rels = sub_rels.substr(1);
@@ -1730,6 +1760,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 m_sub_model_path.clear();
             }
 #else
+            // 为每个子模型创建一个 ObjectImporter
             for (auto path : m_sub_model_paths) {
                 ObjectImporter *object_importer = new ObjectImporter(this, filename, path);
                 m_object_importers.push_back(object_importer);
@@ -1737,6 +1768,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
             bool object_load_result = true;
             boost::mutex mutex;
+            // 并行解析
             tbb::parallel_for(
                 tbb::blocked_range<size_t>(0, m_object_importers.size()),
                 [this, &mutex, &object_load_result](const tbb::blocked_range<size_t>& importer_range) {
@@ -1757,6 +1789,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             }
 
             //merge these objects into one
+            // 将各解析器的 object_list 合并进 m_current_objects
             for (auto obj_importer : m_object_importers) {
                 for (const IdToCurrentObjectMap::value_type&  obj : obj_importer->object_list)
                     m_current_objects.insert({ std::move(obj.first), std::move(obj.second)});
@@ -1869,6 +1902,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                     // extract slic3r print config file
                 //    _extract_print_config_from_archive(archive, stat, config, config_substitutions, filename);
                 //} else
+                // 解析工程打印参数
                 if (boost::algorithm::iequals(name, BBS_PROJECT_CONFIG_FILE)) {
                     // extract slic3r print config file
                     _extract_project_config_from_archive(archive, stat, config, config_substitutions, model);
@@ -2008,6 +2042,8 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 current_plate_data = it->second;
             }
         }
+
+        // 
         for (const IdToModelObjectMap::value_type& object : m_objects) {
             if (object.second >= int(m_model->objects.size())) {
                 add_error("invalid object, id: "+std::to_string(object.first.second));
@@ -2322,17 +2358,23 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
 
     bool _BBS_3MF_Importer::_extract_from_archive(mz_zip_archive& archive, std::string const & path, std::function<bool (mz_zip_archive& archive, const mz_zip_archive_file_stat& stat)> extract, bool restore)
     {
+        // 获取文件数量
         mz_uint num_entries = mz_zip_reader_get_num_files(&archive);
         mz_zip_archive_file_stat stat;
         std::string path2 = path;
+
+        // 去掉开头的/
         if (path2.front() == '/') path2 = path2.substr(1);
+
         // try utf8 encoding
         int index = mz_zip_reader_locate_file(&archive, path2.c_str(), nullptr, 0);
+        
         if (index < 0) {
             // try native encoding
             std::string native_path = encode_path(path2.c_str());
             index = mz_zip_reader_locate_file(&archive, native_path.c_str(), nullptr, 0);
         }
+        
         if (index < 0) {
             // try unicode path extra
             std::string extra(1024, 0);
@@ -2344,10 +2386,12 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 }
             }
         }
+        
         if (index < 0 || !mz_zip_reader_file_stat(&archive, index, &stat)) {
             if (restore) {
                 std::vector<std::string> paths = {m_backup_path + path};
                 if (!m_origin_file.empty()) paths.push_back(m_origin_file);
+
                 for (auto & path2 : paths) {
                     bool result = false;
                     if (boost::filesystem::exists(path2)) {
@@ -2366,6 +2410,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             add_error(error_buf);
             return false;
         }
+
         try
         {
             if (!extract(archive, stat)) {
@@ -2378,6 +2423,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             add_error(e.what());
             return false;
         }
+
         return true;
     }
 

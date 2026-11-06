@@ -370,6 +370,7 @@ Model Model::read_from_archive(const std::string& input_file, DynamicPrintConfig
     bool is_bbl_3mf;
     if (boost::algorithm::iends_with(input_file, ".3mf")) {
         PrusaFileParser prusa_file_parser;
+        // 判断是否是 prusa 的 3mf
         if (prusa_file_parser.check_3mf_from_prusa(input_file)) {
             // for Prusa 3mf
             result = load_3mf(input_file.c_str(), *config, *config_substitutions, &model, true);
